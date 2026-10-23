@@ -1,0 +1,9 @@
+# lastEdit=>2026.10.24-00:08
+x64-win
+x64-linux
+x64-mac
+x64-unix
+release
+
+*.exe
+.git
