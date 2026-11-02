@@ -1,3 +1,5 @@
+# lastEdit=>2026.11.03-00:06
+# lastEdit=>2026.11.02-22:47
 # lastEdit=>2026.10.23-23:37
 # lastEdit=>2026.10.13-23:24
 # lastEdit=>2026.09.26-22:10
@@ -11,10 +13,9 @@
 # creat:2026.04.16
 # aut: vgtxc
 # ver: src#20260428
-# ver: 20261023
+# ver: 20261102
 """
-    bug-> lua安装：luarocks的配置
-    bug-> 在shell环境下无法安装软件
+    bug->...待测试
 """
 
 
@@ -142,18 +143,18 @@ def init_program():
         "root_cache" : "{vpkg_root}/{platform}/cache",
     }
     vpkg_zip_ext = {
-        "single_file": (".7z",".zip",".rar",),
+        "single_file": (".7z",".zip",".rar",".7z.exe",),
         "multi_7z": (".7z.001",".7z.002",".7z.003",".7z.004",".7z.005",".7z.006",),
         "multi_zip": (".zip.001",".zip.002",".zip.003",".zip.004",".zip.005",".zip.006",),
         "multi_rar": (".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar",),
         "default": (
-            ".7z",".zip",".rar",
+            ".7z",".zip",".rar",".7z.exe",
             ".7z.001",
             ".zip.001",
             ".part001.rar",
         ),
         "filter": (
-            ".7z",".zip",".rar",
+            ".7z",".zip",".rar",".7z.exe",
             ".7z.001",".7z.002",".7z.003",".7z.004",".7z.005",".7z.006",
             ".zip.001",".zip.002",".zip.003",".zip.004",".zip.005",".zip.006",
             ".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar",
@@ -162,15 +163,15 @@ def init_program():
     # 默认配置
     def _item_default():
         # --------------------------------------------
-        vpkg_info = {
+        vpkg_info.update({
             "platform": "x64-win",
             "name": "vpkg",
-            "version": "v20261021",
+            "version": "v20261102",
             "website": "https://github.com/vgtxc/vpkg.git",
             "autor": "vgtxc",
             "publish": "None",
             "description": "A lightWight sftw manager!!!",
-        }
+        })
         for idx in vpkg_root_tree.keys():
             vpkg_root_tree[idx] = vpkg_root_tree[idx].replace("{vpkg_root}",vpkg_root)
             vpkg_root_tree[idx] = vpkg_root_tree[idx].replace("{platform}",vpkg_info["platform"])
@@ -232,7 +233,7 @@ def init_program():
                 "<local_path>":["https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe",],
             },
             "env_arg": {
-                "path": ["<local_path>",],
+                "path": ["<local_path>","<local_path>/bin"],
             },
             "install_statu": bool(),
         }
@@ -308,6 +309,7 @@ def init_program():
             },
             "env_arg": {
                 "path": ["<local_path>",],
+                "vcpkg_root": ["<local_path>",],
             },
             "install_statu": bool(),
         }
@@ -340,7 +342,7 @@ def init_program():
                 ],
             },
             "env_arg": {
-                "path": ["<local_path>",],
+                "path": ["<local_path>","<local_path>/Scripts"],
             },
             "install_statu": bool(),
         }
@@ -428,22 +430,23 @@ def init_program():
             "version": "v5.5.0",
             "website": "https://www.lua.org/",
             "local_path": "{vpkg_tool}/<name>/<version>",
-            "symbol_excu": "<local_path>/bin/lua55.exe",
+            "symbol_excu": "<local_path>/lua55.exe",
             "install": {
-                "<local_path>/bin": ["https://zenlayer.dl.sourceforge.net/project/luabinaries/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip",],
-                "<local_path>/lib": ["https://twds.dl.sourceforge.net/project/luabinaries/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip",],
-                "<local_path>/pkg": ["https://luarocks.github.io/luarocks/releases/luarocks-3.13.0-windows-64.zip",],
+                "<local_path>":[
+                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Tools%20Executables/lua-5.4.8_Win64_bin.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_mingw6_lib.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_vc17_lib.zip",
+                    # "https://cytranet-dal.dl.sourceforge.net/project/luabinaries/5.4.8/Tools%20Executables/lua-5.4.8_Win64_bin.zip?viasf=1&fid=794d5107d31ae0f3&e=1793709853&st=F-xGifqwheEz_BHnY1oNKg",
+                    # "https://master.dl.sourceforge.net/project/luabinaries/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_mingw6_lib.zip?viasf=1&fid=d2bc43e7010c17f6&e=1793709881&st=ePZW9RH3Ynubm_Fs49rlJA",
+                    # "https://luarocks.github.io/luarocks/releases/luarocks-3.13.0-windows-64.zip",
+                    "https://downloads.sourceforge.net/project/luabinaries/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip?viasf=1",
+                    "http://downloads.sourceforge.net/project/luabinaries/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip?viasf=1",
+                    "https://luarocks.github.io/luarocks/releases/luarocks-3.13.0-windows-64.zip",
+                ]
             },
             "env_arg": {
-                # "lua": ["<local_path>/bin/lua55.exe",],
-                # "lua_root": ["<local_path>",],
-                # "lua_excu": ["<local_path>/bin/lua55.exe",],
-                # "lua_bindir": ["<local_path>/bin",],
-                # "lua_libdir": ["<local_path>/lib",],
-                # "lua_incdir": ["<local_path>/lib/include",],
-                # "luarocks_root": ["<local_path>/pkg",],
-                "luarocks_config": ["<local_path>/pkg/config.lua",],
-                "path": ["<local_path>/pkg","<local_path>/bin"],
+                "luarocks_config": ["<local_path>/config.lua",],
+                "path": ["<local_path>",],
             },
             "install_statu": bool(),
         }
@@ -620,7 +623,6 @@ def extra_config():
         with open(vpkg_config_file,"r",encoding="utf8") as f:
             config_file_content = f.read()
         config_file_content = re.sub(r"#.*$","",config_file_content,flags=re.MULTILINE)
-        # config_file_content = config_file_content.replace(r"{vpkg_root}",vpkg_root)
         config_file_content = config_file_content.split("\n")
         config_file_content = [idx for idx in config_file_content if idx not in ["","\t"," "*4," "*8," "*12," "*16]]
         config_file_splitIdx = [idx for idx in range(len(config_file_content)) if (config_file_content[idx] in vpkg_config_symbol) or idx==len(config_file_content)]
@@ -890,6 +892,23 @@ def extra_config():
         return vpkg_placeHolder
     # 检测软件安装状态
     def _item_check():
+        vpkg_sftw_platform = vpkg_info["platform"]
+        del_sftw_tool = list()
+        del_sftw_script = list()
+        # 删除不匹配平台的项目
+        for idx in vpkg_sftw["tool"].keys():
+            sftw_platform = vpkg_sftw["tool"][idx]["platform"]
+            if sftw_platform!=vpkg_sftw_platform:
+                del_sftw_tool.append(idx)
+        for idx in vpkg_sftw["script"].keys():
+            sftw_platform = vpkg_sftw["script"][idx]["platform"]
+            if sftw_platform!=vpkg_sftw_platform:
+                del_sftw_script.append(idx)
+        for idx in del_sftw_tool:
+            del vpkg_sftw["tool"][idx]
+        for idx in del_sftw_script:
+            del vpkg_sftw["script"][idx]
+        # 检查软件安装状态
         for idx in vpkg_sftw["tool"].keys():
             vpkg_sftw["tool"][idx]["install_statu"] = os.path.exists(vpkg_sftw["tool"][idx]["symbol_excu"])
         for idx in vpkg_sftw["script"].keys():
@@ -933,16 +952,33 @@ def extra_command():
             return (vpkg_placeHolder,list())
         return (sys_argv[1],sys_argv[2:])
     def _clean_dir(aim_path):     # 清除临时文件夹
+        if os.path.exists(aim_path) == False:
+            log_warn("warn->not exists the dir...>%s<"%(aim_path))
+            return vpkg_placeHolder
         shutil.rmtree(aim_path)
         os.mkdir(aim_path)
-        log_warn("info->clean the dir...>%s<"%(aim_path))
-    def _install_script(script_name):   # 安装脚本, 只在软件内部调用
-        if script_name not in vpkg_sftw["script"].keys():
-            log_erro("erro->func: extra_command._install_script, not exists item...>%s<"%(script_name))
-            return vpkg_placeHolder
-        script_path = "%s/%s"%(vpkg_sftw["script"][script_name]["local_path"],vpkg_sftw["script"][script_name]["name"])
-        with open(script_path,"w") as f:
-            f.write(vpkg_sftw["script"][script_name]["content"])
+        log_warn("warn->clean the dir...>%s<"%(aim_path))
+    def _system_run_cmd(cmd):
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->_system_run_cmd...%s"%(cmd))
+        return result.returncode == 0
+    def _file_download(file_url, out_dir):
+        down_cmd_tool = vpkg_sftw["tool"]["aria2"]["symbol_excu"]
+        cmd = [down_cmd_tool, file_url, "-d", out_dir, "--allow-overwrite=true"]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->download failed (code=%d): %s" % (result.returncode, file_url))
+        return result.returncode == 0
+    def _file_unzip(file_path, out_dir):
+        unzip_cmd_tool = vpkg_sftw["tool"]["a7z"]["symbol_excu"]
+        cmd = [unzip_cmd_tool, "x", file_path, "-o" + out_dir, "-y"]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->unzip failed (code=%d): %s" % (result.returncode, file_path))
+        return result.returncode == 0
     def _cmd_help(cmd_valu):    # 命令_帮助
         log_warn("info->vpkg sftw info start!!!")
         for idx in vpkg_info.keys():
@@ -954,45 +990,40 @@ def extra_command():
         return vpkg_placeHolder
     def _cmd_list(cmd_valu):    # 命令_列出软件
         log_warn("info->list software install status!!!")
-        log_info("\t%-15s->%-10s"%("name","install_status"))
+        log_info("\t%-15s->%-15s->%-10s"%("name","install_status","website"))
         for idx in vpkg_sftw["tool"].keys():
-            tmp_tool_name = idx
+            tmp_tool_name = vpkg_sftw["tool"][idx]["name"]
             tmp_tool_install_statu = vpkg_sftw["tool"][idx]["install_statu"]
+            tmp_tool_website = vpkg_sftw["tool"][idx]["website"]
             if tmp_tool_install_statu == True:
-                log_info("\t%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu))
+                log_info("\t%-15s->%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu,tmp_tool_website))
                 continue
-            log_erro("\t%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu))
-    def _cmd_shell(cmd_valu):   # 创建临时运行环境
-        # 环境变量合并
+            log_erro("\t%-15s->%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu,tmp_tool_website))
+    def _cmd_shell(cmd_valu):
         origin_var = os.environ.copy()
-        shell_var = dict()
+        shell_var = {}
+        path_key = "PATH"
         for idx in origin_var.keys():
-            key = idx.lower()
-            valu = origin_var[idx].replace("\\","/")
-            shell_var[key] = valu
+            shell_var[idx] = origin_var[idx].replace("\\", "/")   # 保留原名
+            if idx.lower() == "path":
+                path_key = idx
+        # 后续合并 sftw env_arg 时用 path_key 而不是硬编码 "path"
         for idx in vpkg_sftw["tool"].keys():
-            sftw_var = vpkg_sftw["tool"][idx]["env_arg"]
-            sftw_statu = vpkg_sftw["tool"][idx]["install_statu"]
-            if sftw_statu == False:
+            if vpkg_sftw["tool"][idx]["install_statu"] == False:
                 continue
-            for idx2 in sftw_var.keys():
-                sftw_var_key = idx2
-                sftw_var_valu = str()
-                for idx3 in sftw_var[idx2]:
-                    sftw_var_valu += idx3+";"
-                sftw_var_valu = sftw_var_valu[:-1]
-                if sftw_var_key in shell_var.keys():
-                    shell_var[sftw_var_key] = ("%s;%s"%(shell_var[sftw_var_key],sftw_var_valu))
-                    continue
-                shell_var[sftw_var_key] = sftw_var_valu.replace(";;",";")
-        log_info("info->reg the env arg...")
-        # 将root_script添加到path环境变量
-        shell_var["path"] = "%s;%s"%(shell_var["path"],vpkg_root_tree["root_script"])
-        # 开启新的shell并注册环境变量
-        if os.name == 'nt':
+            for k, vlist in vpkg_sftw["tool"][idx]["env_arg"].items():
+                val = ";".join(vlist)
+                # 找已有同名 key（大小写不敏感），不存在就用 k
+                existing = next((ek for ek in shell_var if ek.lower() == k.lower()), None)
+                if existing:
+                    shell_var[existing] = "%s;%s" % (shell_var[existing], val)
+                else:
+                    shell_var[k] = val
+        shell_var[path_key] = "%s;%s" % (shell_var[path_key], vpkg_root_tree["root_script"])
+        if os.name == "nt":
             new_shell_arg = "title vpkg && prompt (vpkg) $P$G"
-            new_shell_cmd = ["cmd","/k",new_shell_arg]
-            subprocess.run(new_shell_cmd,env=shell_var)
+            subprocess.run(["cmd", "/k", new_shell_arg], env=shell_var)
+        return vpkg_placeHolder
     def _cmd_install(cmd_valu): # 命令_安装软件
         def _get_file_and_dir(aim_path):
             file_list = list()
@@ -1025,11 +1056,9 @@ def extra_command():
         def _install_sftw(tool_name):
             cache_dir = vpkg_root_tree["root_cache"]        # 缓存目录
             extra_dir = cache_dir+"/extra_dir"              # 解压目录
-            unzip_cmd_tool = vpkg_sftw["tool"]["a7z"]["symbol_excu"]    # 二进制解压工具路径
-            unzip_cmd_fmt = unzip_cmd_tool+" x {archive_file} -o%s -y"%(extra_dir)    # 解压命令
-            down_cmd_tool = vpkg_sftw["tool"]["aria2"]["symbol_excu"]      # 二进制下载工具路径
-            down_cmd_fmt = down_cmd_tool+" {url_link} -d {down_dir} --allow-overwrite=true "
             _clean_dir(cache_dir)                         # 清空缓存目录
+            if os.path.exists(extra_dir)==False:
+                os.makedirs(extra_dir,exist_ok=True)
             cache_init_file, cache_init_dir = _get_file_and_dir(cache_dir) # 扫描文件夹和文件夹
             # (01)逐项下载文件
             for install_item in vpkg_sftw["tool"][tool_name]["install"].keys():
@@ -1038,67 +1067,57 @@ def extra_command():
                 os.makedirs(install_dir,exist_ok=True) # 创建目录树
                 _clean_dir(install_dir)         # 清空目标安装目录
                 for url in download_url_list:   # 下载文件到缓存目录
-                    down_cmd = down_cmd_fmt.format(down_dir=cache_dir,url_link=url)
-                    log_info("info->running command...\n\t%s"%(down_cmd))
-                    os.system(down_cmd)
+                    down_result = _file_download(url,cache_dir)
+                    if not down_result:
+                        log_erro("erro->abort install %s, download failed" % tool_name)
+                        return vpkg_placeHolder
                 cache_over_file, _ = _get_file_and_dir(cache_dir)
                 download_file_list = _get_differ_item(cache_init_file,cache_over_file)
-                pack_file = str()
+                pack_file = list()
                 move_file = list()
                 for idx in download_file_list:  # 判断文件类型并处理
                     file = os.path.split(idx)[1]
                     file_name, file_ext = os.path.splitext(file)
-                    if file_ext in vpkg_zip_ext["default"]:     # 压缩包文件
-                        pack_file = idx
+                    if file_ext in vpkg_zip_ext["default"] and (file_name not in pack_file):     # 压缩包文件
+                        pack_file.append(idx)
                     if file_ext in vpkg_zip_ext["filter"]:
                         continue
                     move_file.append(idx)
-                if pack_file:
-                    file = os.path.split(idx)[1]
-                    file_name, file_ext = os.path.splitext(file)
-                    unzip_cmd = unzip_cmd_fmt.format(archive_file=idx,out_dir=cache_dir)
-                    log_info("info->running command...\n\t%s"%(unzip_cmd))
-                    os.system(unzip_cmd)
-                    extra_dir = _get_stop_dir(extra_dir)
-                    if os.path.exists(install_dir):
-                        shutil.rmtree(install_dir)
-                    os.rename(extra_dir,install_dir)
+                for idx in pack_file:
+                    _clean_dir(extra_dir)
+                    _file_unzip(idx,extra_dir)
+                    unpack_dir = _get_stop_dir(extra_dir)
+                    shutil.copytree(unpack_dir,install_dir,dirs_exist_ok=True)
                 for idx in move_file:
                     old_file = idx
                     file = os.path.split(idx)[1]
                     new_file = os.path.join(install_dir,file)
                     os.rename(old_file,new_file)
-            log_info("info->sucess install...>%s<"%(tool_name))
-        def _run(tool_name):
-            log_info("info->cheak the repo for aim sftw...")
-            if not tool_name:
-                log_erro("erro->command “install” argu is empty...")
-                return vpkg_placeHolder
-            if tool_name not in vpkg_sftw["tool"].keys():   # 检测软件是否存在软件库中
-                platform = vpkg_info["platform"]
-                repo = vpkg_config_file
-                tool_name = tool_name
-                log_erro("erro->platform...>{0}<...\n\tthe repo...>{1}<...\n\tnot contain...>{2}<".format(platform,repo,tool_name))
-                return vpkg_placeHolder
-            log_info("info->check the basic sftw...")
-            if _check_basic_sftw_statu == False:
-                log_erro("erro->lack of basic sftw...>%s<"%(vpkg_sftw_tool_basic))
-                return vpkg_placeHolder
-            tool_statu = vpkg_sftw["tool"][tool_name]["install_statu"]
-            if tool_statu == True:
-                log_info("info->the sftw >%s< already install!!!"%(tool_name))
-                return vpkg_placeHolder
-            _install_sftw(tool_name)
-            tool_statu = os.path.exists(vpkg_sftw["tool"][tool_name]["symbol_excu"])
-            if tool_statu == False:
-                log_erro("erro->install faild...>%s<"%(tool_name))
-                return vpkg_placeHolder
-            # ==========================软件安装: 特殊处理================================
+            # log_info("info->sucess install...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        def _unique_handle(tool_name):
+            if tool_name == "git":
+                log_info("info->install DLC(init home) for...>pixi<")
+                cache_dir = vpkg_root_tree["root_cache"]
+                extra_dir = "%s/%s"%(cache_dir,"extra_dir")
+                git_root = vpkg_sftw["tool"]["git"]["local_path"]
+                git_pack_file = str()
+                for file in os.listdir(git_root):
+                    if file.endswith(".7z.exe"):
+                        git_pack_file = file
+                git_pack_path = "%s/%s"%(git_root,git_pack_file)
+                git_pack_path_new = "%s/%s"%(cache_dir,git_pack_file)
+                os.rename(git_pack_path,git_pack_path_new)
+                _clean_dir(extra_dir)
+                _clean_dir(git_root)
+                _file_unzip(git_pack_path_new,extra_dir)
+                git_unpack_dir = _get_stop_dir(extra_dir)
+                shutil.copytree(git_unpack_dir,git_root,dirs_exist_ok=True)
             if tool_name == "pixi":
                 log_info("info->install DLC(init home) for...>pixi<")
                 pixi_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
                 pixi_home = vpkg_sftw["tool"][tool_name]["local_path"]
-                os.system("%s init %s"%(pixi_excu,pixi_home))
+                _system_run_cmd("%s init %s"%(pixi_excu,pixi_home))
                 vpkg_sftw["script"]["prefix"] = {
                     "platform": "x64-win",
                     "name": "prefix.bat",
@@ -1131,7 +1150,7 @@ def extra_command():
                     with open(file_net_contorl,"w") as f:
                         f.write(new_content)
                 if file_net_contorl and file_get_pip and file_python_excu:
-                    os.system("{python} {get_pip_script}".format(python=file_python_excu,get_pip_script=file_get_pip))
+                    _system_run_cmd("{python} {get_pip_script}".format(python=file_python_excu,get_pip_script=file_get_pip))
             if tool_name == "rust":
                 log_info("info->install DLC for...>rust<")
                 rust_env_arg = vpkg_sftw["tool"][tool_name]["env_arg"]
@@ -1140,36 +1159,32 @@ def extra_command():
                 os.environ["rustup_home"] = rustup_home
                 os.environ["cargo_home"] = cargo_home
                 rustup_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
-                os.system(rustup_excu)            
+                _system_run_cmd(rustup_excu)            
             if tool_name == "lua":
                 log_info("info->install DLC(luarocks config.lua) for...>lua<")
-                lua_excu = vpkg_sftw["tool"]["lua"]["symbol_excu"]
-                lua_bin, file = os.path.split(lua_excu)
-                lua_excu_copy = "%s/lua.exe"%(lua_bin)
-                lua_root = os.path.split(lua_bin)[0]
-                lua_lib = "%s/lib"%(lua_root)
+                lua_ver = "5.5.0"
+                lua_root = vpkg_sftw["tool"]["lua"]["local_path"]
                 lua_include = "%s/include"%(lua_root)
-                lua_pkg = "%s/pkg"%(lua_root)
+                lua_excu = vpkg_sftw["tool"]["lua"]["symbol_excu"]
+                for file in os.listdir(lua_root):
+                    if file.startswith("luac") and file.endswith(".exe"):
+                        lua_excu = "%s/%s"%(lua_root,file)
+                lua_excu_copy = "%s/lua.exe"%(lua_root)
                 shutil.copy2(lua_excu,lua_excu_copy)
                 config_content = (
+                    'lua_version = "<lua_ver>"\n',
                     'rocks_trees = {\n',
-                        '\t{\n',
-                                '\t\tname = "vgt",\n',
-                                '\t\troot = "<lua_bin>",\n',
-                        '\t},\n',
+                        '\t{name = "user",root = "<lua_root>",},\n',
                     '}\n',
                     'variables = {\n',
-                        '\t-- 指定编译器命令\n',
-                        '\t-- CC = "gcc",\n',
-                        '\t-- CXX = "g++",\n',
-                        '\t-- 指定链接器标志 (告诉链接器使用 MinGW 风格)\n',
+                        '\tCC = "gcc",\n',
+                        '\tCXX = "g++",\n',
                         '\tLINKFLAGS = "-shared",\n',
-                        '\t-- 指定lua路径\n',
-                        '\tLUA = "<lua_excu>",             -- 指定exe的具体路径而非文件夹\n',
-                        '\t-- luarocks安装配置\n',
-                        '\tLUA_BINDIR = "<lua_excu_root>",	-- 指定二进制工具文件夹路径\n',
-                        '\tLUA_INCDIR = "<lua_include>",   -- 指定lua的头文件路径\n',
-                        '\tLUA_LIBDIR = "<lua_lib>",	    -- 指定lua动态库路径\n',
+                        '\tLUA_VERSION = "<lua_ver>",\n',
+                        '\tLUA = "<lua_excu>",\n',
+                        '\tLUA_BINDIR = "<lua_root>",\n',
+                        '\tLUA_INCDIR = "<lua_include>",\n',
+                        '\tLUA_LIBDIR = "<lua_root>",\n',
                     '}',
                 )
                 vpkg_sftw["script"]["luarocks_config"] = {
@@ -1177,24 +1192,49 @@ def extra_command():
                     "name": "config.lua",
                     "version": "v1.0",
                     "website": "void",
-                    "local_path": lua_pkg,
+                    "local_path": lua_root,
                     "content": "".join(config_content).replace(
-                            "<lua_bin>",lua_bin
+                            "<lua_ver>",lua_ver
                         ).replace(
                             "<lua_root>",lua_root
                         ).replace(
                             "<lua_excu>",lua_excu_copy
                         ).replace(
-                            "<lua_excu_root>",lua_bin
-                        ).replace(
                             "<lua_include>",lua_include
-                        ).replace(
-                            "<lua_lib>",lua_lib
                         ),
                     "install_statu": bool(),
                 }
                 _install_script("luarocks_config")
+            return vpkg_placeHolder
+        def _run(tool_name):
+            log_info("info->cheak the repo for aim sftw...")
+            if not tool_name:
+                log_erro("erro->command “install” argu is empty...")
+                return vpkg_placeHolder
+            if tool_name not in vpkg_sftw["tool"].keys():   # 检测软件是否存在软件库中
+                platform = vpkg_info["platform"]
+                repo = vpkg_config_file
+                tool_name = tool_name
+                log_erro("erro->platform...>%s<...the repo not contain...>%s<"%(platform,tool_name))
+                return vpkg_placeHolder
+            log_info("info->check the basic sftw...")
+            if _check_basic_sftw_statu == False:
+                log_erro("erro->lack of basic sftw...>%s<"%(vpkg_sftw_tool_basic))
+                return vpkg_placeHolder
+            tool_statu = vpkg_sftw["tool"][tool_name]["install_statu"]
+            if tool_statu == True:
+                log_info("info->the sftw >%s< already install!!!"%(tool_name))
+                return vpkg_placeHolder
+            # ==========================软件安装: 下载解压================================
+            _install_sftw(tool_name)
             # ==========================软件安装: 特殊处理================================
+            _unique_handle(tool_name)
+            # ===========================================================================
+            tool_statu = os.path.exists(vpkg_sftw["tool"][tool_name]["symbol_excu"])
+            if tool_statu == False:
+                log_erro("erro->install faild...>%s<"%(tool_name))
+                return vpkg_placeHolder
+            log_info("info->install success...>%s<"%(tool_name))
             return vpkg_placeHolder
         tool_name = cmd_valu
         _run(tool_name)   
@@ -1243,6 +1283,9 @@ def main():
     extra_command()
     # print(vpkg_sftw["tool"])
     # print(vpkg_sftw["script"]["luarocks_config"])
+    # for idx in vpkg_sftw["tool"].keys():
+    #     name = vpkg_sftw["tool"][idx]["name"]
+    #     website = vpkg_sftw["tool"][idx]["website"]
 
 if __name__=="__main__":
     import os

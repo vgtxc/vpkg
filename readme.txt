@@ -1,4 +1,37 @@
-v20261013
+//lastEdit=>2026.11.02-22:32
+//creat:2025.10.01
+thanks:
+    deepseek
+    Qwen
+
+reference:
+    a7z             ->      https://www.7-zip.org/
+    aria2           ->      https://github.com/aria2/aria2
+    ffmpeg          ->      https://github.com/BtbN/FFmpeg-Builds
+    git             ->      https://git-scm.com/
+    pixi            ->      https://github.com/prefix-dev/pixi
+    uv              ->      https://github.com/astral-sh/uv
+    cmake           ->      https://github.com/Kitware/CMake
+    xmake           ->      https://github.com/xmake-io/xmake
+    vcpkg           ->      https://github.com/microsoft/vcpkg-tool
+    nodejs          ->      https://nodejs.org
+    python          ->      https://www.python.org
+    rust            ->      https://rust-lang.org/
+    java            ->      https://www.java.com
+    golang          ->      https://golang.google.cn/
+    zig             ->      https://ziglang.org/
+    vlang           ->      https://vlang.io/
+    lua             ->      https://www.lua.org/
+    mingw_w64       ->      https://github.com/niXman/mingw-builds-binaries
+    llvm_mingw      ->      https://github.com/mstorsjo/llvm-mingw
+    llvm_msvc       ->      https://github.com/aftermathlabs/llvm-msvc
+    llvm_winlibs    ->      https://github.com/brechtsanders/winlibs_mingw
+    mingw_winlibs   ->      https://github.com/brechtsanders/winlibs_mingw
+    llvm_qt         ->      https://github.com/yuanpeirong/buildQt
+    mingw_qt        ->      https://github.com/yuanpeirong/buildQt
+    msvc_qt         ->      https://github.com/yuanpeirong/buildQt
+
+v20261102
     项目说明
     """
     >>>项目占位符: 
@@ -6,8 +39,8 @@ v20261013
     >>>项目文件:
         |-vpkg.py; 功能实现
         |-vpkg_config.txt; 配置文件
-        |-cache; 临时文件夹
         |-platform; 平台根目录, 目前仅支持[x64-win,x64-linux,x64-mac,x64-unix]
+        |---cache; 临时文件夹
         |---tool; 工具文件夹
         |---script; 脚本文件夹
     >>>vpkg.py中的核心dict:
@@ -58,6 +91,7 @@ v20261013
     ##################################################
     ##################################################
     ##################################################
+    # vpkg_config.txt说明
     # 1.只允许使用“#”进行单行注释
     # 2.合法的“条目(item)”
     #   |-item_type: [info->sftw,info->tool,info->script]
@@ -66,12 +100,10 @@ v20261013
     #   |-“info->script”:创建的脚本信息
     # 3.“{}”:由python传入全局变量
     #   |-{vpkg_root}: vpkg.py,vpkg_config.txt等文件所在的路径
-    #   |-{vpkg_x64-win} = {vpkg_root}/x64-win: x64-win平台根目录
-    #   |---{vpkg_x64-win_tool} = {vpkg_x64-win}/tool: x64-win工具默认安装根目录
-    #   |---{vpkg_x64-win_script} = {vpkg_x64-win}/script: x64-win脚本默认写入根目录
-    #   |-{vpkg_x64-linux} = {vpkg_root}/x64-linux
-    #   |---{vpkg_x64-linux_tool} = {vpkg_x64-linux}/tool
-    #   |---{vpkg_x64-linux_script} = {vpkg_x64-linux}/script
+    #   |-{vpkg_system} = {vpkg_root}/{platform}
+    #   |-{vpkg_cache} = {vpkg_root}/{platform}/cache
+    #   |-{vpkg_tool} = {vpkg_root}/{platform}/tool
+    #   |-{vpkg_script} = {vpkg_root}/{platform}/script
     # 3.“关键词<keyword>”:由python实现每个条目内部的自引用
     #   |-sftw不允许内部自引用
     #   |-sftw关键字顺序: platform,name,version,website,autor->publish->description
@@ -85,7 +117,7 @@ v20261013
     #   |-item_type可选sftw/tool/script: 指定引用条目类型
     #   |-item_name为选定类型下属的“条目”
     #   |-keyword为选定“条目”下的关键词: 可选platform/name/version/local_path/symbol_excu
-    # 4.tool条目下软件的一般安装路径:{vpkg_root}/<platform>/tool/<name>/<version>
+    # 4.tool条目下软件的一般安装路径:{vpkg_tool_root}/<name>/<version>
     #   |-下载文件为“单个其他文件”: 直接下载后移动到“安装路径”
     #   |-下载文件为“单个可执行文件”: 直接下载后移动到“安装路径”
     #   |-下载文件为“单个压缩包文件”: 下载后解压->找到解压文件夹下“包含非单个文件夹”的层级->将该层级的所有文件移动到“安装路径”
