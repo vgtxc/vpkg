@@ -1,3 +1,4 @@
+# lastEdit=>2026.11.03-23:50
 # lastEdit=>2026.11.03-00:06
 # lastEdit=>2026.11.02-22:47
 # lastEdit=>2026.10.23-23:37
@@ -48,6 +49,7 @@ def init_program():
     global vpkg_placeHolder
     global vpkg_cmd
     global vpkg_zip_ext
+    global vpkg_download_proxy
     # 判断是否是 PyInstaller 打包后的环境
     if getattr(sys, 'frozen', False):   # 如果是打包后的 exe，获取 exe 所在的目录
         vpkg_root = os.path.dirname(sys.executable)
@@ -69,6 +71,7 @@ def init_program():
         "autor": str(),
         "publish": str(),
         "description": str(),
+        "proxy": bool(),
     }
     vpkg_info_kwOrder = (
         "platform",
@@ -78,6 +81,7 @@ def init_program():
         "autor",
         "publish",
         "description",
+        "proxy",
     )
     vpkg_sftw = {
         "tool": dict(),
@@ -134,6 +138,7 @@ def init_program():
         "install",
         "remove",
         "shell",
+        "excu",
     )
     vpkg_root_tree = {
         "root_vpkg": "{vpkg_root}",
@@ -160,6 +165,43 @@ def init_program():
             ".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar",
         ),
     }
+    vpkg_download_proxy = {     # 采用xget代理: https://github.com/xixu-me/xget
+        "https://github.com/": "https://xget.xi-xu.me/gh/",
+        "https://gist.github.com/": "https://xget.xi-xu.me/gist/",
+        "https://gitlab.com/": "https://xget.xi-xu.me/gl/",
+        "https://gitea.com/": "https://xget.xi-xu.me/gitea/",
+        "https://codeberg.org/": "https://xget.xi-xu.me/codeberg/",
+        "https://sourceforge.net/": "https://xget.xi-xu.me/sf/",
+        "https://android.googlesource.com/": "https://xget.xi-xu.me/aosp/",
+        "https://huggingface.co/": "https://xget.xi-xu.me/hf/",
+        "https://civitai.com/": "https://xget.xi-xu.me/civitai/",
+        "https://registry.npmjs.org/": "https://xget.xi-xu.me/npm/",
+        "https://pypi.org/": "https://xget.xi-xu.me/pypi/",
+        "https://repo.anaconda.com/": "https://xget.xi-xu.me/conda/",
+        "https://conda.anaconda.org/": "https://xget.xi-xu.me/conda/community/",
+        "https://repo1.maven.org/": "https://xget.xi-xu.me/maven/",
+        "https://downloads.apache.org/": "https://xget.xi-xu.me/apache/",
+        "https://plugins.gradle.org/": "https://xget.xi-xu.me/gradle/",
+        "https://github.com/Homebrew/": "https://xget.xi-xu.me/homebrew/",
+        "https://rubygems.org/": "https://xget.xi-xu.me/rubygems/",
+        "https://cran.r-project.org/": "https://xget.xi-xu.me/cran/",
+        "https://www.cpan.org/": "https://xget.xi-xu.me/cpan/",
+        "https://tug.ctan.org/": "https://xget.xi-xu.me/ctan/",
+        "https://proxy.golang.org/": "https://xget.xi-xu.me/golang/",
+        "https://api.nuget.org/": "https://xget.xi-xu.me/nuget/",
+        "https://crates.io/": "https://xget.xi-xu.me/crates/",
+        "https://repo.packagist.org/": "https://xget.xi-xu.me/packagist/",
+        "https://dl.flathub.org/": "https://xget.xi-xu.me/flathub/",
+        "https://deb.debian.org/": "https://xget.xi-xu.me/debian/",
+        "https://archive.ubuntu.com/": "https://xget.xi-xu.me/ubuntu/",
+        "https://mirrors.kernel.org/fedora/": "https://xget.xi-xu.me/fedora/",
+        "https://download.rockylinux.org/": "https://xget.xi-xu.me/rocky/",
+        "https://download.opensuse.org/": "https://xget.xi-xu.me/opensuse/",
+        "https://geo.mirror.pkgbuild.com/": "https://xget.xi-xu.me/arch/",
+        "https://arxiv.org/": "https://xget.xi-xu.me/arxiv/",
+        "https://f-droid.org/": "https://xget.xi-xu.me/fdroid/",
+        "https://updates.jenkins.io/": "https://xget.xi-xu.me/jenkins/",
+    }
     # 默认配置
     def _item_default():
         # --------------------------------------------
@@ -171,6 +213,7 @@ def init_program():
             "autor": "vgtxc",
             "publish": "None",
             "description": "A lightWight sftw manager!!!",
+            "proxy": True,
         })
         for idx in vpkg_root_tree.keys():
             vpkg_root_tree[idx] = vpkg_root_tree[idx].replace("{vpkg_root}",vpkg_root)
@@ -324,20 +367,22 @@ def init_program():
                 "<local_path>": ["https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip",],
             },
             "env_arg": {
-                "path": ["<local_path>",],
+                "path": ["<local_path>","<local_path>/node_modules","<local_path>/node_pkg",],
+                "npm_config_prefix": ["<local_path>/npm_pkg",],
+                "npm_config_cache": ["<local_path>/npm_cache",],
             },
             "install_statu": bool(),
         }
         vpkg_sftw["tool"]["python"] = {
             "platform": "x64-win",
             "name": "python",
-            "version": "v3.14.7",
+            "version": "v3.15.2",
             "website": "https://www.python.org",
             "local_path": "{vpkg_tool}/<name>/<version>",
             "symbol_excu": "<local_path>/python.exe",
             "install": {
                 "<local_path>": [
-                    "https://www.python.org/ftp/python/3.14.7/python-3.14.7-embed-amd64.zip",
+                    "https://www.python.org/ftp/python/3.15.2/python-3.15.2-embed-amd64.zip",
                     "https://bootstrap.pypa.io/get-pip.py",
                 ],
             },
@@ -433,15 +478,19 @@ def init_program():
             "symbol_excu": "<local_path>/lua55.exe",
             "install": {
                 "<local_path>":[
-                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Tools%20Executables/lua-5.4.8_Win64_bin.zip",
-                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_mingw6_lib.zip",
-                    # "https://sourceforge.net/projects/luabinaries/files/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_vc17_lib.zip",
-                    # "https://cytranet-dal.dl.sourceforge.net/project/luabinaries/5.4.8/Tools%20Executables/lua-5.4.8_Win64_bin.zip?viasf=1&fid=794d5107d31ae0f3&e=1793709853&st=F-xGifqwheEz_BHnY1oNKg",
-                    # "https://master.dl.sourceforge.net/project/luabinaries/5.4.8/Windows%20Libraries/Static/lua-5.4.8_Win64_mingw6_lib.zip?viasf=1&fid=d2bc43e7010c17f6&e=1793709881&st=ePZW9RH3Ynubm_Fs49rlJA",
-                    # "https://luarocks.github.io/luarocks/releases/luarocks-3.13.0-windows-64.zip",
-                    "https://downloads.sourceforge.net/project/luabinaries/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip?viasf=1",
-                    "http://downloads.sourceforge.net/project/luabinaries/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip?viasf=1",
-                    "https://luarocks.github.io/luarocks/releases/luarocks-3.13.0-windows-64.zip",
+                    # --------------项目地址
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_vc17_lib.zip",
+                    # "https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip",
+                    # --------------项目地址
+                    # --------------下载直链
+                    # "https://downloads.sourceforge.net/project/luabinaries/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip?viasf=1",
+                    # "http://downloads.sourceforge.net/project/luabinaries/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip?viasf=1",
+                    # --------------下载直链
+                    "https://sourceforge.net/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip",
+                    "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip",
+                    "https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip",
                 ]
             },
             "env_arg": {
@@ -583,6 +632,125 @@ def init_program():
             },
             "install_statu": bool(),
         }
+        vpkg_sftw["tool"]["motrix"] = {   # 下载软件
+            "platform": "x64-win",
+            "name": "motrix",
+            "version": "v2.2.1",
+            "website": "https://motrix.app/zh/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/Motrix.exe",
+            "install": {
+                "<local_path>": [
+                    "https://dl.motrix.app/releases/Motrix-2.2.1-win.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["ScreenCapture"] = {   # 截图软件
+            "platform": "x64-win",
+            "name": "ScreenCapture",
+            "version": "v2.5.15",
+            "website": "https://github.com/xland/ScreenCapture",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/ScreenCapture.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/xland/ScreenCapture/releases/download/2.5.15/ScreenCapture.exe",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["sharex"] = {   # 截图软件
+            "platform": "x64-win",
+            "name": "sharex",
+            "version": "v22.1.0",
+            "website": "https://github.com/ShareX/ShareX",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/ShareX.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/ShareX/ShareX/releases/download/v22.1.0/ShareX-22.1.0-portable-x64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["vscode"] = {   # 文本软件
+            "platform": "x64-win",
+            "name": "vscode",
+            "version": "v.lastest",
+            "website": "https://code.visualstudio.com/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/Code.exe",
+            "install": {
+                "<local_path>": [
+                    "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["textadept"] = {   # 文本软件
+            "platform": "x64-win",
+            "name": "textadept",
+            "version": "v13.1",
+            "website": "https://github.com/orbitalquark/textadept/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/textadept.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/orbitalquark/textadept/releases/download/textadept_13.1/textadept_13.1.win.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<lcoal_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["FlClash"] = {   # 代理软件
+            "platform": "x64-win",
+            "name": "FlClash",
+            "version": "v0.9.2",
+            "website": "https://github.com/chen08209/FlClash",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/FlClash.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/chen08209/FlClash/releases/download/v0.9.2/FlClash-0.9.2-windows-amd64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<lcoal_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["v2rayN"] = {   # 代理软件
+            "platform": "x64-win",
+            "name": "v2rayN",
+            "version": "v7.25.6",
+            "website": "https://github.com/2dust/v2rayN",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/v2rayN.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/2dust/v2rayN/releases/download/7.25.6/v2rayN-windows-64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<lcoal_path>",],
+            },
+            "install_statu": bool(),
+        }
         # --------------------------------------------
         vpkg_sftw["script"]["unproxy"] = {
             "platform": "x64-win",
@@ -639,7 +807,8 @@ def extra_config():
                     " "*4+"website:(?P<website>.*)\n",
                     " "*4+"autor:(?P<autor>.*)\n",
                     " "*4+"publish:(?P<publish>.*)\n",
-                    " "*4+"description:(?P<description>.*)",
+                    " "*4+"description:(?P<description>.*)\n",
+                    " "*4+"proxy:(?P<proxy>.*)",
                 )
                 tmp_match_result = re.match(r"".join(tmp_match_pattern),tmp_split_part_string)
                 if tmp_match_result==None:
@@ -651,7 +820,17 @@ def extra_config():
                     log_erro("...source config_file part over...")
                     break
                 for idx1 in vpkg_info_kwOrder:
-                    vpkg_info[idx1] = tmp_match_result.group(idx1).strip()
+                    tmp_match_valu = tmp_match_result.group(idx1).strip()
+                    if idx1 == "proxy" and (tmp_match_valu in ("False","false","F","f","0")):
+                        vpkg_info[idx1] = False
+                        continue
+                    if idx1 == "proxy" and (tmp_match_valu in ("True","true","T","t","1")):
+                        vpkg_info[idx1] = True
+                        continue
+                    if idx1 == "proxy":
+                        vpkg_info[idx1] = False
+                        continue
+                    vpkg_info[idx1] = tmp_match_valu
                 continue
             if tmp_split_part[0] in ["info->tool","info=>tool"]:
                 tmp_match_pattern = (
@@ -965,7 +1144,15 @@ def extra_command():
         return result.returncode == 0
     def _file_download(file_url, out_dir):
         down_cmd_tool = vpkg_sftw["tool"]["aria2"]["symbol_excu"]
-        cmd = [down_cmd_tool, file_url, "-d", out_dir, "--allow-overwrite=true"]
+        file_url_real = file_url
+        out_dir_real = out_dir
+        if vpkg_info["proxy"]==True:    # 开启代理, 进行url替换
+            print("...................",vpkg_info["proxy"])
+            for idx in vpkg_download_proxy.keys():
+                if idx in file_url_real:
+                    file_url_real = file_url_real.replace(idx,vpkg_download_proxy[idx])
+                    print(file_url_real)
+        cmd = [down_cmd_tool, file_url_real, "-d", out_dir_real, "--allow-overwrite=true"]
         log_info("info->running command...\n\t%s" % " ".join(cmd))
         result = subprocess.run(cmd)
         if result.returncode != 0:
@@ -1053,6 +1240,17 @@ def extra_command():
                     return current
                 # 继续向下
                 current = os.path.join(current, subdirs[0])
+        def _install_script(script_name):
+            if script_name not in vpkg_sftw["script"].keys():
+                log_erro("erro->not exist script config...>%s<"%(script_name))
+                return vpkg_placeHolder
+            script_name = script_name
+            script_root = vpkg_sftw["script"][script_name]["local_path"]
+            script_path = "%s/%s"%(script_root,script_name)
+            script_content = vpkg_sftw["script"][script_name]["content"]
+            with open(script_path,"w") as f:
+                f.write(script_content)
+            return vpkg_placeHolder
         def _install_sftw(tool_name):
             cache_dir = vpkg_root_tree["root_cache"]        # 缓存目录
             extra_dir = cache_dir+"/extra_dir"              # 解压目录
@@ -1255,9 +1453,23 @@ def extra_command():
         if len(os.listdir(install_path_father))==0:
             shutil.rmtree(install_path_father)
         log_warn("warn->success remove sftw...>%s<"%(tool_name))
+    def _cmd_excu(cmd_valu):
+        tool_name = cmd_valu[0]
+        if tool_name not in vpkg_sftw["tool"].keys():
+            log_erro("erro->platform...>%s<...repo not exist...>%s<"%(vpkg_info["platform"],tool_name))
+            return vpkg_placeHolder
+        tool_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
+        cmd = [tool_excu,]
+        if len(cmd_valu)>1:
+            cmd += cmd_valu[1:]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->running command...erro exit!!!")
+        return result.returncode == 0
     cmd_type,cmd_valu = _get_cli_arg()
     cmd_type = cmd_type
-    if len(cmd_valu)>0:
+    if cmd_type in ("help","list","install","remove","shell"):
         cmd_valu = cmd_valu[0]
     log_warn("warn->func extra_command: %s...%s"%(cmd_type,cmd_valu))
     if cmd_type not in vpkg_cmd:
@@ -1273,19 +1485,18 @@ def extra_command():
         _cmd_remove(cmd_valu)
     if cmd_type == "shell":
         _cmd_shell(cmd_valu)
+    if cmd_type == "excu":
+        _cmd_excu(cmd_valu)
     return vpkg_placeHolder
     
 def main():
     init_program()
     log_info("info->vpkg local_path...>%s<"%(vpkg_root))
-    # log_info("info->vpkg config_file...>%s<"%(vpkg_config_file))
+    log_info("info->vpkg_info...>%s<"%(vpkg_info))
+    log_info("info->vpkg config_file path...>%s<"%(vpkg_config_file))
+    log_info("info->vpkg config_file exist...>%s<"%(os.path.exists(vpkg_config_file)))
     extra_config()
     extra_command()
-    # print(vpkg_sftw["tool"])
-    # print(vpkg_sftw["script"]["luarocks_config"])
-    # for idx in vpkg_sftw["tool"].keys():
-    #     name = vpkg_sftw["tool"][idx]["name"]
-    #     website = vpkg_sftw["tool"][idx]["website"]
 
 if __name__=="__main__":
     import os

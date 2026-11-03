@@ -5,6 +5,8 @@ thanks:
     Qwen
 
 reference:
+    ----------------------------------------------------------------
+    ----------------------------------------------------------------
     a7z             ->      https://www.7-zip.org/
     aria2           ->      https://github.com/aria2/aria2
     ffmpeg          ->      https://github.com/BtbN/FFmpeg-Builds
@@ -30,6 +32,9 @@ reference:
     llvm_qt         ->      https://github.com/yuanpeirong/buildQt
     mingw_qt        ->      https://github.com/yuanpeirong/buildQt
     msvc_qt         ->      https://github.com/yuanpeirong/buildQt
+    ----------------------------------------------------------------
+    ----------------------------------------------------------------
+    xget            ->      https://github.com/xixu-me/xget
 
 v20261102
     项目说明
