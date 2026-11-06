@@ -4,6 +4,7 @@ x64-linux
 x64-mac
 x64-unix
 release
+tmp
 
 *.exe
 .git

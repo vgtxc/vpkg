@@ -1,0 +1,1518 @@
+# lastEdit=>2026.11.06-20:10
+# lastEdit=>2026.04.16-22:38-2026.11.03-23:50
+# creat:2026.04.16
+# aut: vgtxc
+# ver: src#20260428
+# ver: 20261102
+# ver: 20261106
+"""
+    bug->...待测试
+"""
+
+
+# ================= 颜色与日志打印封装 =================
+
+def log_info(msg):
+    print(f'[green]{msg}[/green]')
+
+def log_warn(msg):
+    print(f'[blue]{msg}[/blue]')
+
+def log_erro(msg):
+    print(f'[red]{msg}[/red]')
+
+# ================= 核心功能函数 =================
+# ================= 00.初始化 =================
+def init_program():
+    global vpkg_root
+    global vpkg_config_file
+    global vpkg_root_tree
+    global vpkg_config_symbol
+    global vpkg_info
+    global vpkg_info_kwOrder
+    global vpkg_sftw
+    global vpkg_sftw_toolFmt
+    global vpkg_sftw_scriptFmt
+    global vpkg_sftw_tool_kwOrder
+    global vpkg_sftw_script_kwOrder
+    global vpkg_sftw_tool_basic
+    global vpkg_placeHolder
+    global vpkg_cmd
+    global vpkg_zip_ext
+    global vpkg_download_proxy
+    # 判断是否是 PyInstaller 打包后的环境
+    if getattr(sys, 'frozen', False):   # 如果是打包后的 exe，获取 exe 所在的目录
+        vpkg_root = os.path.dirname(sys.executable)
+    else:   # 如果是直接运行 .py 源文件，获取当前脚本所在的目录
+        script_path = os.path.abspath(__file__)
+        vpkg_root = os.path.dirname(script_path)
+    vpkg_root = vpkg_root.replace("\\","/")
+    vpkg_config_file = vpkg_root+"/vpkg_config.txt"
+    vpkg_config_symbol = (
+        "info->sftw", "info=>sftw",
+        "info->tool", "info=>tool",
+        "info->script", "info=>script",
+    )
+    vpkg_info = {
+        "platform": str(),
+        "name": str(),
+        "version": str(),
+        "website": str(),
+        "autor": str(),
+        "publish": str(),
+        "description": str(),
+        "proxy": bool(),
+    }
+    vpkg_info_kwOrder = (
+        "platform",
+        "name",
+        "version",
+        "website",
+        "autor",
+        "publish",
+        "description",
+        "proxy",
+    )
+    vpkg_sftw = {
+        "tool": dict(),
+        "script": dict(),
+    }
+    vpkg_sftw_toolFmt = {
+        "platform": str(),
+        "name": str(),
+        "version": str(),
+        "website": str(),
+        "local_path": str(),
+        "symbol_excu": str(),
+        "install": str(),
+        "env_arg": str(),
+        "install_statu": bool(),    # 由软件判断赋值, 不通过配置文件获取
+    }
+    vpkg_sftw_scriptFmt = {
+        "platform": str(),
+        "name": str(),
+        "version": str(),
+        "website": str(),
+        "local_path": str(),
+        "content": str(),
+        "install_statu": bool(),    # 由软件判断赋值, 不通过配置文件获取
+    }
+    vpkg_sftw_tool_kwOrder = (
+        "platform",
+        "name",
+        "version",
+        "website",
+        "local_path",
+        "symbol_excu",
+        "install",
+        "env_arg",
+        "install_statu",
+    )
+    vpkg_sftw_script_kwOrder = (
+        "platform",
+        "name",
+        "version",
+        "website",
+        "local_path",
+        "content",
+        "install_statu",
+    )
+    vpkg_sftw_tool_basic = (
+        "a7z",
+        "aria2",
+        # "wget",
+        # "fastCapture",
+    )
+    vpkg_placeHolder = "ugv"
+    vpkg_cmd = (
+        "help",
+        "list",
+        "install",
+        "remove",
+        "shell",
+        "excu",
+    )
+    vpkg_root_tree = {
+        "root_vpkg": "{vpkg_root}",
+        "root_system": "{vpkg_root}/{platform}",
+        "root_tool": "{vpkg_root}/{platform}/tool",
+        "root_script": "{vpkg_root}/{platform}/script",
+        "root_cache" : "{vpkg_root}/{platform}/cache",
+    }
+    vpkg_zip_ext = {
+        "single_file": (".7z",".zip",".rar",".7z.exe",),
+        "multi_7z": (".7z.001",".7z.002",".7z.003",".7z.004",".7z.005",".7z.006",),
+        "multi_zip": (".zip.001",".zip.002",".zip.003",".zip.004",".zip.005",".zip.006",),
+        "multi_rar": (".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar",),
+        "default": (
+            ".7z",".zip",".rar",".7z.exe",
+            ".7z.001",
+            ".zip.001",
+            ".part001.rar",
+        ),
+        "filter": (
+            ".7z",".zip",".rar",".7z.exe",
+            ".7z.001",".7z.002",".7z.003",".7z.004",".7z.005",".7z.006",
+            ".zip.001",".zip.002",".zip.003",".zip.004",".zip.005",".zip.006",
+            ".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar",
+        ),
+    }
+    vpkg_download_proxy = {     # 采用xget代理: https://github.com/xixu-me/xget
+        "https://github.com/": "https://xget.xi-xu.me/gh/",
+        "https://gist.github.com/": "https://xget.xi-xu.me/gist/",
+        "https://gitlab.com/": "https://xget.xi-xu.me/gl/",
+        "https://gitea.com/": "https://xget.xi-xu.me/gitea/",
+        "https://codeberg.org/": "https://xget.xi-xu.me/codeberg/",
+        "https://sourceforge.net/": "https://xget.xi-xu.me/sf/",
+        "https://android.googlesource.com/": "https://xget.xi-xu.me/aosp/",
+        "https://huggingface.co/": "https://xget.xi-xu.me/hf/",
+        "https://civitai.com/": "https://xget.xi-xu.me/civitai/",
+        "https://registry.npmjs.org/": "https://xget.xi-xu.me/npm/",
+        "https://pypi.org/": "https://xget.xi-xu.me/pypi/",
+        "https://repo.anaconda.com/": "https://xget.xi-xu.me/conda/",
+        "https://conda.anaconda.org/": "https://xget.xi-xu.me/conda/community/",
+        "https://repo1.maven.org/": "https://xget.xi-xu.me/maven/",
+        "https://downloads.apache.org/": "https://xget.xi-xu.me/apache/",
+        "https://plugins.gradle.org/": "https://xget.xi-xu.me/gradle/",
+        "https://github.com/Homebrew/": "https://xget.xi-xu.me/homebrew/",
+        "https://rubygems.org/": "https://xget.xi-xu.me/rubygems/",
+        "https://cran.r-project.org/": "https://xget.xi-xu.me/cran/",
+        "https://www.cpan.org/": "https://xget.xi-xu.me/cpan/",
+        "https://tug.ctan.org/": "https://xget.xi-xu.me/ctan/",
+        "https://proxy.golang.org/": "https://xget.xi-xu.me/golang/",
+        "https://api.nuget.org/": "https://xget.xi-xu.me/nuget/",
+        "https://crates.io/": "https://xget.xi-xu.me/crates/",
+        "https://repo.packagist.org/": "https://xget.xi-xu.me/packagist/",
+        "https://dl.flathub.org/": "https://xget.xi-xu.me/flathub/",
+        "https://deb.debian.org/": "https://xget.xi-xu.me/debian/",
+        "https://archive.ubuntu.com/": "https://xget.xi-xu.me/ubuntu/",
+        "https://mirrors.kernel.org/fedora/": "https://xget.xi-xu.me/fedora/",
+        "https://download.rockylinux.org/": "https://xget.xi-xu.me/rocky/",
+        "https://download.opensuse.org/": "https://xget.xi-xu.me/opensuse/",
+        "https://geo.mirror.pkgbuild.com/": "https://xget.xi-xu.me/arch/",
+        "https://arxiv.org/": "https://xget.xi-xu.me/arxiv/",
+        "https://f-droid.org/": "https://xget.xi-xu.me/fdroid/",
+        "https://updates.jenkins.io/": "https://xget.xi-xu.me/jenkins/",
+    }
+    # 默认配置
+    def _item_default():
+        # --------------------------------------------
+        vpkg_info.update({
+            "platform": "x64-win",
+            "name": "vpkg",
+            "version": "v20261102",
+            "website": "https://github.com/vgtxc/vpkg.git",
+            "autor": "vgtxc",
+            "publish": "None",
+            "description": "A lightWight sftw manager!!!",
+            "proxy": False,
+        })
+        for idx in vpkg_root_tree.keys():
+            vpkg_root_tree[idx] = vpkg_root_tree[idx].replace("{vpkg_root}",vpkg_root)
+            vpkg_root_tree[idx] = vpkg_root_tree[idx].replace("{platform}",vpkg_info["platform"])
+        # --------------------------------------------
+        vpkg_sftw["tool"]["a7z"] = {
+            "platform": "x64-win",
+            "name": "a7z",
+            "version": "v26.04",
+            "website": "https://www.7-zip.org/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/7za.exe",
+            "install": {
+                "<local_path>":["https://github.com/ip7z/7zip/releases/download/26.04/7z2604-extra.7z",],
+            },
+            "env_arg": {
+                "path":["<local_path>"],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["aria2"] = {
+            "platform": "x64-win",
+            "name": "aria2",
+            "version": "v1.37.0",
+            "website": "https://github.com/aria2/aria2",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/aria2c.exe",
+            "install": {
+                "<local_path>": ["https://github.com/aria2/aria2/releases/latest/download/aria2-1.37.0-win-64bit-build1.zip",],
+            },
+            "env_arg": {
+                "aria2_home": ["<local_path>"],
+                "path": ["<local_path>"],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["wget"] = {
+            "platform": "x64-win",
+            "name": "wget",
+            "version": "v1.25.0",
+            "website": "https://eternallybored.org/misc/wget/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/wget.exe",
+            "install": {
+                "<local_path>": ["https://eternallybored.org/misc/wget/releases/wget-1.25.0-win64.zip",],
+            },
+            "env_arg": {
+                "wget_home": ["<local_path>",],
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["fastCapture"] = {   # 截图软件
+            "platform": "x64-win",
+            "name": "fastCapture",
+            "version": "v11.3",
+            "website": "https://www.faststone.org/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/FSCapture.exe",
+            "install": {
+                "<local_path>": [
+                    "https://www.faststonesoft.net/DN/FSCapture113.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["ncnn_vulkan"] = {
+            "platform": "x64-win",
+            "name": "ncnn_vulkan",
+            "version": "v20250915",
+            "website": "https://github.com/BtbN/FFmpeg-Builds",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/waifu2x-ncnn-vulkan.exe",
+            "install": {
+                "<local_path>": ["https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["ffmpeg"] = {
+            "platform": "x64-win",
+            "name": "ffmpeg",
+            "version": "v.latest",
+            "website": "https://github.com/BtbN/FFmpeg-Builds",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/ffmpeg.exe",
+            "install": {
+                "<local_path>": ["https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["git"] = {
+            "platform": "x64-win",
+            "name": "git",
+            "version": "v2.55.0",
+            "website": "https://git-scm.com/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/git.exe",
+            "install": {
+                "<local_path>":["https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe",],
+            },
+            "env_arg": {
+                "path": ["<local_path>","<local_path>/bin"],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["pixi"] = {
+            "platform": "x64-win",
+            "name": "pixi",
+            "version": "v0.80.0",
+            "website": "https://github.com/prefix-dev/pixi",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/pixi.exe",
+            "install": {
+                "<local_path>":["https://github.com/prefix-dev/pixi/releases/download/v0.80.0/pixi-x86_64-pc-windows-msvc.zip",],
+            },
+            "env_arg": {
+                "path":["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["cmake"] = {
+            "platform": "x64-win",
+            "name": "cmake",
+            "version": "v4.5.0-rc1",
+            "website": "https://github.com/Kitware/CMake",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/cmake.exe",
+            "install": {
+                "<local_path>": ["https://github.com/Kitware/CMake/releases/download/v4.5.0-rc1/cmake-4.5.0-rc1-windows-x86_64.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["xmake"] = {
+            "platform": "x64-win",
+            "name": "xmake",
+            "version": "v3.1.1",
+            "website": "https://github.com/xmake-io/xmake",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/xmake.exe",
+            "install": {
+                "<local_path>": ["https://github.com/xmake-io/xmake/releases/download/v3.1.1/xmake-v3.1.1.win64.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["vcpkg"] = {
+            "platform": "x64-win",
+            "name": "vcpkg",
+            "version": "v20261016",
+            "website": "https://github.com/microsoft/vcpkg",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/vcpkg.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/microsoft/vcpkg/archive/refs/tags/2026.10.16.zip",
+                    "https://github.com/microsoft/vcpkg-tool/releases/download/2026-09-26/vcpkg.exe",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+                "vcpkg_root": ["<local_path>",],
+                "vcpkg_default_triplet": ["x64-mingw-static",],
+                "vcpkg_default_host_triplet": ["x64-mingw-static",],
+                # "VCPKG_TARGET_ARCHITECTURE": ["x64",],
+                # "VCPKG_LIBRARY_LINKAGE": ["dynamic",],
+                # "VCPKG_LIBRARY_LINKAGE": ["dynamic",],
+                # "VCPKG_CMAKE_SYSTEM_NAME": ["MinGW",],   
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["nodejs"] = {
+            "platform": "x64-win",
+            "name": "nodejs",
+            "version": "v26.8.2",
+            "website": "https://nodejs.org",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/node.exe",
+            "install": {
+                "<local_path>": ["https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>","<local_path>/node_modules","<local_path>/node_pkg",],
+                "npm_config_prefix": ["<local_path>/npm_pkg",],
+                "npm_config_cache": ["<local_path>/npm_cache",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["python"] = {
+            "platform": "x64-win",
+            "name": "python",
+            "version": "v3.15.2",
+            "website": "https://www.python.org",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/python.exe",
+            "install": {
+                "<local_path>": [
+                    "https://www.python.org/ftp/python/3.15.2/python-3.15.2-embed-amd64.zip",
+                    "https://bootstrap.pypa.io/get-pip.py",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>","<local_path>/Scripts"],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["rust"] = {
+            "platform": "x64-win",
+            "name": "rust",
+            "version": "v1.98.1",
+            "website": "https://rust-lang.org/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/rustup-init.exe",
+            "install": {
+                "<local_path>": ["https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",],
+            },
+            "env_arg": {
+                "rustup_home": ["<local_path>/rustup_home",],
+                "cargo_home": ["<local_path>/cargo_home",],
+                "path": ["<local_path>","<local_path>/cargo_home/bin","<local_path>/rustup_home",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["java"] = {
+            "platform": "x64-win",
+            "name": "java",
+            "version": "v27",
+            "website": "https://www.java.com",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/java.exe",
+            "install": {
+                "<local_path>": ["https://download.oracle.com/java/27/latest/jdk-27_windows-x64_bin.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["golang"] = {
+            "platform": "x64-win",
+            "name": "golang",
+            "version": "v1.27.3",
+            "website": "https://golang.google.cn/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/go.exe",
+            "install": {
+                "<local_path>": ["https://go.dev/dl/go1.27.3.windows-amd64.zip",],
+            },
+            "env_arg": {
+                "go_root": ["<local_path>",],
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["zig"] = {
+            "platform": "x64-win",
+            "name": "zig",
+            "version": "v0.17.1",
+            "website": "https://ziglang.org/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/zig.exe",
+            "install": {
+                "<local_path>": [
+                    # "https://ziglang.org/download/0.17.1/zig-x86_64-windows-0.17.1.zip",
+                    "https://ziglang.com.cn/download/0.17.1/zig-x86_64-windows-0.17.1.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["vlang"] = {
+            "platform": "x64-win",
+            "name": "vlang",
+            "version": "v0.5",
+            "website": "https://vlang.io/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/v.exe",
+            "install": {
+                "<local_path>": ["https://github.com/vlang/v/releases/latest/download/v_windows.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["lua"] = {
+            "platform": "x64-win",
+            "name": "lua",
+            "version": "v5.5.0",
+            "website": "https://www.lua.org/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/lua55.exe",
+            "install": {
+                "<local_path>":[
+                    # --------------项目地址
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_vc17_lib.zip",
+                    # "https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip",
+                    # --------------项目地址
+                    # --------------下载直链
+                    # "https://downloads.sourceforge.net/project/luabinaries/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip?viasf=1",
+                    # "https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip?viasf=1",
+                    # --------------下载直链
+                    # --------------代理链接
+                    "https://xget.xi-xu.me/sf/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip",
+                    "https://xget.xi-xu.me/sf/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip",
+                    # --------------代理链接
+                    "https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip",
+                ]
+            },
+            "env_arg": {
+                "luarocks_config": ["<local_path>/config.lua",],
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["mingw_w64"] = {
+            "platform": "x64-win",
+            "name": "mingw_w64",
+            "version": "v16.2.0",
+            "website": "https://github.com/niXman/mingw-builds-binaries",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/gcc.exe",
+            "install": {
+                "<local_path>": ["https://github.com/niXman/mingw-builds-binaries/releases/download/16.2.0-rt_v14-rev1/x86_64-16.2.0-release-posix-seh-ucrt-rt_v14-rev1.7z",],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["llvm_mingw"] = {
+            "platform": "x64-win",
+            "name": "llvm_mingw",
+            "version": "v20260908",
+            "website": "https://github.com/mstorsjo/llvm-mingw",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/gcc.exe",
+            "install": {
+                "<local_path>": ["https://github.com/mstorsjo/llvm-mingw/releases/download/20260908/llvm-mingw-20260908-ucrt-x86_64.zip",],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["llvm_msvc"] = {
+            "platform": "x64-win",
+            "name": "llvm_msvc",
+            "version": "v777.3.1",
+            "website": "https://github.com/aftermathlabs/llvm-msvc",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/clang-cl.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.001",
+                    "https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.002",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["llvm_winlibs"] = {
+            "platform": "x64-win",
+            "name": "llvm_winlibs",
+            "version": "v16.2.0",
+            "website": "https://github.com/brechtsanders/winlibs_mingw",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/gcc.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-llvm-23.1.3-mingw-w64ucrt-14.0.0-r3.7z",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["mingw_winlibs"] = {
+            "platform": "x64-win",
+            "name": "mingw_winlibs",
+            "version": "v16.2.0",
+            "website": "https://github.com/brechtsanders/winlibs_mingw",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/gcc.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r3.7z",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["llvm_qt"] = {
+            "platform": "x64-win",
+            "name": "llvm_qt",
+            "version": "v6.11.2",
+            "website": "https://github.com/yuanpeirong/buildQt",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/qmake.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_llvm-mingw22.1.8_64_UCRT.7z",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["mingw_qt"] = {
+            "platform": "x64-win",
+            "name": "mingw_qt",
+            "version": "v6.11.2",
+            "website": "https://github.com/yuanpeirong/buildQt",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/qmake.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_mingw1620_64_UCRT.7z",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["msvc_qt"] = {
+            "platform": "x64-win",
+            "name": "msvc_qt",
+            "version": "v6.11.2",
+            "website": "https://github.com/yuanpeirong/buildQt",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/bin/qmake.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_msvc2026_64.7z",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>/bin",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["motrix"] = {   # 下载软件
+            "platform": "x64-win",
+            "name": "motrix",
+            "version": "v2.2.1",
+            "website": "https://motrix.app/zh/",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/Motrix.exe",
+            "install": {
+                "<local_path>": [
+                    "https://dl.motrix.app/releases/Motrix-2.2.1-win.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["ScreenCapture"] = {   # 截图软件
+            "platform": "x64-win",
+            "name": "ScreenCapture",
+            "version": "v2.5.15",
+            "website": "https://github.com/xland/ScreenCapture",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/ScreenCapture.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/xland/ScreenCapture/releases/download/2.5.15/ScreenCapture.exe",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["sharex"] = {   # 截图软件
+            "platform": "x64-win",
+            "name": "sharex",
+            "version": "v22.1.0",
+            "website": "https://github.com/ShareX/ShareX",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/ShareX.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/ShareX/ShareX/releases/download/v22.1.0/ShareX-22.1.0-portable-x64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        # --------------------------------------------
+        vpkg_sftw["tool"]["FlClash"] = {   # 代理软件
+            "platform": "x64-win",
+            "name": "FlClash",
+            "version": "v0.9.2",
+            "website": "https://github.com/chen08209/FlClash",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/FlClash.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/chen08209/FlClash/releases/download/v0.9.2/FlClash-0.9.2-windows-amd64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        vpkg_sftw["tool"]["v2rayN"] = {   # 代理软件
+            "platform": "x64-win",
+            "name": "v2rayN",
+            "version": "v7.25.6",
+            "website": "https://github.com/2dust/v2rayN",
+            "local_path": "{vpkg_tool}/<name>/<version>",
+            "symbol_excu": "<local_path>/v2rayN.exe",
+            "install": {
+                "<local_path>": [
+                    "https://github.com/2dust/v2rayN/releases/download/7.25.6/v2rayN-windows-64.zip",
+                ],
+            },
+            "env_arg": {
+                "path": ["<local_path>",],
+            },
+            "install_statu": bool(),
+        }
+        # --------------------------------------------
+        vpkg_sftw["script"]["unproxy"] = {
+            "platform": "x64-win",
+            "name": "unproxy.bat",
+            "version": "1.0",
+            "website": "void",
+            "local_path": "{vpkg_script}",
+            "content": "@echo off\nset http_proxy=\nset https_proxy=\necho info-}remove the proxy\n\n",
+            "install_statu": bool(),
+        }
+        vpkg_sftw["script"]["proxy_clash"] = {
+            "platform": "x64-win",
+            "name": "proxy_clash.bat",
+            "version": "v1.0",
+            "website": "void",
+            "local_path": "{vpkg_script}",
+            "content": "@echo off\nset http_proxy=127.0.0.1:7890\nset https_proxy=127.0.0.1:7890\necho info-}set the proxy to http://127.0.0.1:7890\n\n",
+            "install_statu": bool(),
+        }
+        vpkg_sftw["script"]["proxy_v2ray"] = {
+            "platform": "x64-win",
+            "name": "proxy_v2ray.bat",
+            "version": "v1.0",
+            "website": "void",
+            "local_path": "{vpkg_script}",
+            "content": "@echo off\nset http_proxy=127.0.0.1:7880\nset https_proxy=127.0.0.1:7880\necho info-}set the proxy to http://127.0.0.1:7880\n\n",
+            "install_statu": bool(),
+        }
+        # --------------------------------------------
+        return vpkg_placeHolder
+    _item_default()
+    return vpkg_placeHolder
+
+# ================= 01.配置解析 =================
+def extra_config():
+    # 条目匹配
+    def _item_match():
+        with open(vpkg_config_file,"r",encoding="utf8") as f:
+            config_file_content = f.read()
+        config_file_content = re.sub(r"#.*$","",config_file_content,flags=re.MULTILINE)
+        config_file_content = config_file_content.split("\n")
+        config_file_content = [idx for idx in config_file_content if idx not in ["","\t"," "*4," "*8," "*12," "*16]]
+        config_file_splitIdx = [idx for idx in range(len(config_file_content)) if (config_file_content[idx] in vpkg_config_symbol) or idx==len(config_file_content)]
+        config_file_splitIdx.append(len(config_file_content))
+        for idx in range(len(config_file_splitIdx)-1):
+            tmp_split_part = config_file_content[config_file_splitIdx[idx]:config_file_splitIdx[idx+1]]
+            tmp_split_part_string = "\n".join(tmp_split_part)
+            if tmp_split_part[0] in ["info->sftw","info=>sftw"]:
+                tmp_match_pattern = (
+                    "info->sftw\n",
+                    " "*4+"platform:(?P<platform>.*)\n",
+                    " "*4+"name:(?P<name>.*)\n",
+                    " "*4+"version:(?P<version>.*)\n",
+                    " "*4+"website:(?P<website>.*)\n",
+                    " "*4+"autor:(?P<autor>.*)\n",
+                    " "*4+"publish:(?P<publish>.*)\n",
+                    " "*4+"description:(?P<description>.*)\n",
+                    " "*4+"proxy:(?P<proxy>.*)",
+                )
+                tmp_match_result = re.match(r"".join(tmp_match_pattern),tmp_split_part_string)
+                if tmp_match_result==None:
+                    tmp_match_result = re.match(r"".join(tmp_match_pattern).replace("info->sftw","info=>sftw"),tmp_split_part_string)
+                if tmp_match_result==None:
+                    log_erro("erro->func:<extra_config>...config file “sftw” syntax panic!!!")
+                    log_erro("...source config_file part as follow...")
+                    log_warn(tmp_split_part_string)
+                    log_erro("...source config_file part over...")
+                    break
+                for idx1 in vpkg_info_kwOrder:
+                    tmp_match_valu = tmp_match_result.group(idx1).strip()
+                    if idx1 == "proxy" and (tmp_match_valu in ("False","false","F","f","0")):
+                        vpkg_info[idx1] = False
+                        continue
+                    if idx1 == "proxy" and (tmp_match_valu in ("True","true","T","t","1")):
+                        vpkg_info[idx1] = True
+                        continue
+                    if idx1 == "proxy":
+                        vpkg_info[idx1] = False
+                        continue
+                    vpkg_info[idx1] = tmp_match_valu
+                continue
+            if tmp_split_part[0] in ["info->tool","info=>tool"]:
+                tmp_match_pattern = (
+                    "info->tool\n",
+                    " "*4+"platform:(?P<platform>.*)\n",
+                    " "*4+"name:(?P<name>.*)\n",
+                    " "*4+"version:(?P<version>.*)\n",
+                    " "*4+"website:(?P<website>.*)\n",
+                    " "*4+"local_path:(?P<local_path>.*)\n",
+                    " "*4+"symbol_excu:(?P<symbol_excu>.*)\n",
+                    " "*4+"init->install(?P<install>.*)over->install\n",
+                    " "*4+"init->env_arg(?P<env_arg>.*)over->env_arg",
+                )
+                tmp_match_result = re.match(r"".join(tmp_match_pattern),tmp_split_part_string,re.S)
+                if tmp_match_result==None:
+                    tmp_match_result = re.match(r"".join(tmp_match_pattern).replace("info->tool","info=>tool"),tmp_split_part_string)
+                if tmp_match_result==None:
+                    log_erro("erro->func:<extra_config>...config file “tool” syntax panic!!!")
+                    log_erro("...source config_file part as follow...")
+                    log_warn(tmp_split_part_string)
+                    log_erro("...source config_file part over...")
+                    continue
+                tmp_tool_platform =  tmp_match_result.group("platform").strip()
+                tmp_tool_name =  tmp_match_result.group("name").strip()
+                tmp_tool_version =  tmp_match_result.group("version").strip()
+                tmp_tool_website =  tmp_match_result.group("website").strip()
+                tmp_tool_local_path = tmp_match_result.group("local_path").strip()
+                tmp_tool_symbol_excu = tmp_match_result.group("symbol_excu").strip()
+                tmp_tool_install =  tmp_match_result.group("install").split("\n")
+                tmp_tool_env_arg =  tmp_match_result.group("env_arg").split("\n")
+                if tmp_tool_platform!=vpkg_info["platform"]:
+                    log_info("info->“{tool_name}”...“{platformA}”...not match system platform...“{platformB}”!!!".format(tool_name=tmp_tool_name,platformA=tmp_tool_platform,platformB=vpkg_info["platform"]))
+                    continue
+                tmp_tool_install_dict = dict()
+                tmp_tool_env_arg_dict = dict()
+                for idx1 in tmp_tool_install:
+                    tmp_install_line = idx1.strip()
+                    if not tmp_install_line:
+                        continue
+                    tmp_install_line = tmp_install_line.split("=")
+                    tmp_install_path = tmp_install_line[0].strip()
+                    tmp_install_url = tmp_install_line[1].strip()
+                    if tmp_install_path not in tmp_tool_install_dict.keys():
+                        tmp_tool_install_dict[tmp_install_path] = [tmp_install_url]
+                        continue
+                    tmp_tool_install_dict[tmp_install_path].append(tmp_install_url)
+                for idx1 in tmp_tool_env_arg:
+                    tmp_env_arg_line = idx1.strip()
+                    if not tmp_env_arg_line:
+                        continue
+                    tmp_env_arg_line = tmp_env_arg_line.split("=")
+                    tmp_env_arg_name = tmp_env_arg_line[0].strip()
+                    tmp_env_arg_value = tmp_env_arg_line[1].strip()
+                    if tmp_env_arg_name not in tmp_tool_env_arg_dict.keys():
+                        tmp_tool_env_arg_dict[tmp_env_arg_name] = [tmp_env_arg_value]
+                        continue
+                    tmp_tool_env_arg_dict[tmp_env_arg_name].append(tmp_env_arg_value)
+                vpkg_sftw["tool"][tmp_tool_name] = {
+                    "platform": tmp_tool_platform,
+                    "name": tmp_tool_name,
+                    "version": tmp_tool_version,
+                    "website": tmp_tool_website,
+                    "local_path": tmp_tool_local_path,
+                    "symbol_excu": tmp_tool_symbol_excu,
+                    "install": tmp_tool_install_dict,
+                    "env_arg": tmp_tool_env_arg_dict,
+                }
+            if tmp_split_part[0] in ["info->script","info=>script"]:
+                tmp_match_pattern = (
+                    "info->script\n",
+                    " "*4+"platform:(?P<platform>.*)\n",
+                    " "*4+"name:(?P<name>.*)\n",
+                    " "*4+"version:(?P<version>.*)\n",
+                    " "*4+"website:(?P<website>.*)\n",
+                    " "*4+"local_path:(?P<local_path>.*)\n",
+                    " "*4+"init->content(?P<content>.*)over->content",
+                )
+                tmp_match_result = re.match(r"".join(tmp_match_pattern),tmp_split_part_string,re.S)
+                if tmp_match_result==None:
+                    tmp_match_result = re.match(r"".join(tmp_match_pattern).replace("info->script","info=>script"),tmp_split_part_string)
+                if tmp_match_result==None:
+                    log_erro("erro->func:<extra_config>...config file “tool” syntax panic!!!")
+                    log_erro("...source config_file part as follow...")
+                    log_warn(tmp_split_part_string)
+                    log_erro("...source config_file part over...")
+                    continue
+                tmp_script_platform =  tmp_match_result.group("platform").strip()
+                tmp_script_name = tmp_match_result.group("name").strip()
+                tmp_script_version = tmp_match_result.group("version").strip()
+                tmp_script_website = tmp_match_result.group("website").strip()
+                tmp_script_local_path = tmp_match_result.group("local_path").strip()
+                tmp_script_content = tmp_match_result.group("content").split("\n")
+                if tmp_script_platform!=vpkg_info["platform"]:
+                    log_info("info->“{script_name}”...“{platformA}”...not match system platform...“{platformB}”!!!".format(script_name=tmp_script_name,platformA=tmp_script_platform,platformB=vpkg_info["platform"]))
+                    continue
+                tmp_script_content_string = str()
+                for idx1 in tmp_script_content:
+                    if not idx1:
+                        continue
+                    tmp_script_content_string += idx1[8:]+"\n"
+                vpkg_sftw["script"][tmp_script_name] = {
+                    "platform": tmp_script_platform,
+                    "name": tmp_script_name,
+                    "version": tmp_script_version,
+                    "website": tmp_script_website,
+                    "local_path": tmp_script_local_path,
+                    "content": tmp_script_content_string,
+                }
+                continue
+        return vpkg_placeHolder
+    # 条目关键词自引用解引用
+    def _item_extra():
+        for tool_name in vpkg_sftw["tool"].keys():
+            tmp_tool_platform = vpkg_sftw["tool"][tool_name]["platform"]
+            tmp_tool_name = vpkg_sftw["tool"][tool_name]["name"]
+            tmp_tool_version = vpkg_sftw["tool"][tool_name]["version"]
+            tmp_tool_website = vpkg_sftw["tool"][tool_name]["website"]
+            tmp_tool_local_path = vpkg_sftw["tool"][tool_name]["local_path"]
+            tmp_tool_symbol_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
+            tmp_tool_install_dict = vpkg_sftw["tool"][tool_name]["install"]
+            tmp_tool_env_arg_dict = vpkg_sftw["tool"][tool_name]["env_arg"]
+            # local_path解引用
+            tmp_tool_local_path = tmp_tool_local_path.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+            tmp_tool_local_path = tmp_tool_local_path.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+            tmp_tool_local_path = tmp_tool_local_path.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+            tmp_tool_local_path = tmp_tool_local_path.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+            tmp_tool_local_path = tmp_tool_local_path.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+            tmp_tool_local_path = tmp_tool_local_path.replace("<platform>",tmp_tool_platform)
+            tmp_tool_local_path = tmp_tool_local_path.replace("<name>",tmp_tool_name)
+            tmp_tool_local_path = tmp_tool_local_path.replace("<version>",tmp_tool_version)
+            # symbol_excu解引用
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("<platform>",tmp_tool_platform)
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("<name>",tmp_tool_name)
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("<version>",tmp_tool_version)
+            tmp_tool_symbol_excu = tmp_tool_symbol_excu.replace("<local_path>",tmp_tool_local_path)
+            vpkg_sftw["tool"][tool_name]["local_path"] = tmp_tool_local_path
+            vpkg_sftw["tool"][tool_name]["symbol_excu"] = tmp_tool_symbol_excu
+            # install解引用
+            tmp_tool_install_dict_new = dict()
+            for idx1 in tmp_tool_install_dict.keys():
+                tmp_key = idx1
+                tmp_val = tmp_tool_install_dict[idx1]
+                tmp_key = tmp_key.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+                tmp_key = tmp_key.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+                tmp_key = tmp_key.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+                tmp_key = tmp_key.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+                tmp_key = tmp_key.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+                tmp_key = tmp_key.replace("<platform>",tmp_tool_platform)
+                tmp_key = tmp_key.replace("<name>",tmp_tool_name)
+                tmp_key = tmp_key.replace("<version>",tmp_tool_version)
+                tmp_key = tmp_key.replace("<website>",tmp_tool_version)
+                tmp_key = tmp_key.replace("<local_path>",tmp_tool_local_path)
+                tmp_key = tmp_key.replace("<symbol_excu>",tmp_tool_local_path)
+                tmp_new_key = tmp_key
+                tmp_new_val = list()
+                for idx2 in range(len(tmp_val)):
+                    tmp_val_elem = tmp_val[idx2]
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+                    tmp_val_elem = tmp_val_elem.replace("<platform>",tmp_tool_platform)
+                    tmp_val_elem = tmp_val_elem.replace("<name>",tmp_tool_name)
+                    tmp_val_elem = tmp_val_elem.replace("<version>",tmp_tool_version)
+                    tmp_val_elem = tmp_val_elem.replace("<website>",tmp_tool_version)
+                    tmp_val_elem = tmp_val_elem.replace("<local_path>",tmp_tool_local_path)
+                    tmp_val_elem = tmp_val_elem.replace("<symbol_excu>",tmp_tool_local_path)
+                    tmp_new_val.append(tmp_val_elem)
+                tmp_tool_install_dict_new[tmp_new_key] = tmp_new_val
+            # env_arg解引用
+            tmp_tool_env_arg_dict_new = dict()
+            for idx1 in tmp_tool_env_arg_dict.keys():
+                tmp_key = idx1
+                tmp_val = tmp_tool_env_arg_dict[idx1]
+                tmp_key = tmp_key.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+                tmp_key = tmp_key.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+                tmp_key = tmp_key.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+                tmp_key = tmp_key.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+                tmp_key = tmp_key.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+                tmp_key = tmp_key.replace("<platform>",tmp_tool_platform)
+                tmp_key = tmp_key.replace("<name>",tmp_tool_name)
+                tmp_key = tmp_key.replace("<version>",tmp_tool_version)
+                tmp_key = tmp_key.replace("<website>",tmp_tool_version)
+                tmp_key = tmp_key.replace("<local_path>",tmp_tool_local_path)
+                tmp_key = tmp_key.replace("<symbol_excu>",tmp_tool_local_path)
+                tmp_new_key = tmp_key
+                tmp_new_val = list()
+                for idx2 in range(len(tmp_val)):
+                    tmp_val_elem = tmp_val[idx2]
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+                    tmp_val_elem = tmp_val_elem.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+                    tmp_val_elem = tmp_val_elem.replace("<platform>",tmp_tool_platform)
+                    tmp_val_elem = tmp_val_elem.replace("<name>",tmp_tool_name)
+                    tmp_val_elem = tmp_val_elem.replace("<version>",tmp_tool_version)
+                    tmp_val_elem = tmp_val_elem.replace("<website>",tmp_tool_version)
+                    tmp_val_elem = tmp_val_elem.replace("<local_path>",tmp_tool_local_path)
+                    tmp_val_elem = tmp_val_elem.replace("<symbol_excu>",tmp_tool_local_path)
+                    tmp_new_val.append(tmp_val_elem)
+                tmp_tool_env_arg_dict_new[tmp_new_key] = tmp_new_val
+            vpkg_sftw["tool"][tool_name]["install"] = tmp_tool_install_dict_new
+            vpkg_sftw["tool"][tool_name]["env_arg"] = tmp_tool_env_arg_dict_new
+        # script条目解引用
+        for script_name in vpkg_sftw["script"].keys():
+            tmp_script_platform = vpkg_sftw["script"][script_name]["platform"]
+            tmp_script_name = vpkg_sftw["script"][script_name]["name"]
+            tmp_script_version = vpkg_sftw["script"][script_name]["version"]
+            tmp_script_website = vpkg_sftw["script"][script_name]["website"]
+            tmp_script_local_path = vpkg_sftw["script"][script_name]["local_path"]
+            tmp_script_content = vpkg_sftw["script"][script_name]["content"]
+            tmp_script_local_path = tmp_script_local_path.replace("{vpkg_root}",vpkg_root_tree["root_vpkg"])
+            tmp_script_local_path = tmp_script_local_path.replace("{vpkg_system}",vpkg_root_tree["root_system"])
+            tmp_script_local_path = tmp_script_local_path.replace("{vpkg_tool}",vpkg_root_tree["root_tool"])
+            tmp_script_local_path = tmp_script_local_path.replace("{vpkg_script}",vpkg_root_tree["root_script"])
+            tmp_script_local_path = tmp_script_local_path.replace("{vpkg_cache}",vpkg_root_tree["root_cache"])
+            tmp_script_local_path = tmp_script_local_path.replace("<platform>",tmp_script_platform)
+            tmp_script_local_path = tmp_script_local_path.replace("<name>",tmp_script_platform)
+            tmp_script_local_path = tmp_script_local_path.replace("<version>",tmp_script_platform)
+            vpkg_sftw["script"][script_name]["local_path"] = tmp_script_local_path
+        # 检测必要的文件目录,不存在则创建
+        for idx in vpkg_root_tree.keys():
+            necessary_dir = vpkg_root_tree[idx].format(vpkg_root=vpkg_root,platform=vpkg_info["platform"])
+            vpkg_root_tree[idx] = necessary_dir
+            if not os.path.exists(necessary_dir):
+                os.mkdir(necessary_dir)
+                log_warn("info->creat dir...>%s<"%(necessary_dir))
+        # 检测软件安装状态
+        for idx in vpkg_sftw["tool"].keys():
+            vpkg_sftw["tool"][idx]["install_statu"] = os.path.exists(vpkg_sftw["tool"][idx]["symbol_excu"])
+        return vpkg_placeHolder
+    # 检测软件安装状态
+    def _item_check():
+        vpkg_sftw_platform = vpkg_info["platform"]
+        del_sftw_tool = list()
+        del_sftw_script = list()
+        # 删除不匹配平台的项目
+        for idx in vpkg_sftw["tool"].keys():
+            sftw_platform = vpkg_sftw["tool"][idx]["platform"]
+            if sftw_platform!=vpkg_sftw_platform:
+                del_sftw_tool.append(idx)
+        for idx in vpkg_sftw["script"].keys():
+            sftw_platform = vpkg_sftw["script"][idx]["platform"]
+            if sftw_platform!=vpkg_sftw_platform:
+                del_sftw_script.append(idx)
+        for idx in del_sftw_tool:
+            del vpkg_sftw["tool"][idx]
+        for idx in del_sftw_script:
+            del vpkg_sftw["script"][idx]
+        # 检查软件安装状态
+        for idx in vpkg_sftw["tool"].keys():
+            vpkg_sftw["tool"][idx]["install_statu"] = os.path.exists(vpkg_sftw["tool"][idx]["symbol_excu"])
+        for idx in vpkg_sftw["script"].keys():
+            vpkg_sftw["script"][idx]["install_statu"] = os.path.exists("%s/%s"%(vpkg_sftw["script"][idx]["local_path"],vpkg_sftw["script"][idx]["name"]))
+    # 安装脚本
+    def _install_script():
+        for idx in vpkg_sftw["script"].keys():
+            script_path = "%s/%s"%(vpkg_sftw["script"][idx]["local_path"],vpkg_sftw["script"][idx]["name"])
+            install_statu = vpkg_sftw["script"][idx]["install_statu"]
+            if install_statu == True:
+                continue
+            with open(script_path,"w") as f:
+                f.write(vpkg_sftw["script"][idx]["content"])
+            log_info("info->func:extra_config._install_script, install script...>%s<"%(script_path))
+    # 配置文件判断
+    if os.path.exists(vpkg_config_file) == False:
+        log_warn("warn->config file miss...>%s<"%(vpkg_config_file))
+        _item_extra()
+        _item_check()
+        _install_script()
+        return vpkg_placeHolder
+    _item_match()
+    _item_extra()
+    _item_check()
+    _install_script()
+    return vpkg_placeHolder
+
+# ================= 02.命令解析 =================
+def extra_command():
+    def _check_basic_sftw_statu():
+        sftw_statu = False
+        for idx in vpkg_sftw_tool_basic:
+            install_statu = vpkg_sftw["tool"][idx]["install_statu"]
+            if install_statu == False:
+                sftw_statu = False
+                log_erro("erro->lack of basic sftw...>%s<"%(idx))
+        return sftw_statu
+    def _get_cli_arg():     # 获取命令行命令
+        sys_argv = sys.argv
+        if len(sys_argv)==1:
+            return (vpkg_placeHolder,list())
+        return (sys_argv[1],sys_argv[2:])
+    def _clean_dir(aim_path):     # 清除临时文件夹
+        if os.path.exists(aim_path) == False:
+            log_warn("warn->not exists the dir...>%s<"%(aim_path))
+            return vpkg_placeHolder
+        shutil.rmtree(aim_path)
+        os.mkdir(aim_path)
+        log_warn("warn->clean the dir...>%s<"%(aim_path))
+    def _system_run_cmd(cmd):
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->_system_run_cmd...%s"%(cmd))
+        return result.returncode == 0
+    def _file_download(file_url, out_dir):
+        file_url_real = file_url
+        out_dir_real = out_dir
+        if vpkg_info["proxy"]==True:    # 开启代理, 进行url替换
+            for idx in vpkg_download_proxy.keys():
+                if idx in file_url_real:
+                    file_url_real = file_url_real.replace(idx,vpkg_download_proxy[idx])
+        aria2_statu = vpkg_sftw["tool"]["aria2"]["install_statu"]
+        aria2_excu = vpkg_sftw["tool"]["aria2"]["symbol_excu"]
+        wget_statu = vpkg_sftw["tool"]["wget"]["install_statu"]
+        wget_excu = vpkg_sftw["tool"]["wget"]["symbol_excu"]
+        cmd = [aria2_excu, file_url_real, "--dir=%s"%(out_dir_real), "--allow-overwrite=true", "--max-connection-per-server=16", "--min-split-size=1M"]
+        if aria2_statu == False and wget_statu == True:     # 默认aria2下载, 其次wget
+            cmd = [wget_excu, "-P",  out_dir_real, file_url_real]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->download failed (code=%d): %s" % (result.returncode, file_url))
+        return result.returncode == 0
+    def _file_unzip(file_path, out_dir):
+        unzip_cmd_tool = vpkg_sftw["tool"]["a7z"]["symbol_excu"]
+        cmd = [unzip_cmd_tool, "x", file_path, "-o" + out_dir, "-y"]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->unzip failed (code=%d): %s" % (result.returncode, file_path))
+        return result.returncode == 0
+    def _cmd_help(cmd_valu):    # 命令_帮助
+        log_warn("info->vpkg sftw info start!!!")
+        for idx in vpkg_info.keys():
+            log_info("\t%-12s->\t%s" % (idx, vpkg_info[idx]))
+        log_warn("info->vpkg usage...>vpkg \\[command] \\[argument]<")
+        for idx in vpkg_cmd:
+            log_info("\tsupport command: {cmd}".format(cmd=idx))
+        log_warn("info->vpkg sftw info end!!!")
+        return vpkg_placeHolder
+    def _cmd_list(cmd_valu):    # 命令_列出软件
+        log_warn("info->list software install status!!!")
+        log_info("\t%-15s->%-15s->%-10s"%("name","install_status","website"))
+        for idx in vpkg_sftw["tool"].keys():
+            tmp_tool_name = vpkg_sftw["tool"][idx]["name"]
+            tmp_tool_install_statu = vpkg_sftw["tool"][idx]["install_statu"]
+            tmp_tool_website = vpkg_sftw["tool"][idx]["website"]
+            if tmp_tool_install_statu == True:
+                log_info("\t%-15s->%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu,tmp_tool_website))
+                continue
+            log_erro("\t%-15s->%-15s->%-10s"%(tmp_tool_name,tmp_tool_install_statu,tmp_tool_website))
+    def _cmd_shell(cmd_valu):
+        origin_var = os.environ.copy()
+        shell_var = {}
+        path_key = "PATH"
+        for idx in origin_var.keys():
+            shell_var[idx] = origin_var[idx].replace("\\", "/")   # 保留原名
+            if idx.lower() == "path":
+                path_key = idx
+        # 后续合并 sftw env_arg 时用 path_key 而不是硬编码 "path"
+        for idx in vpkg_sftw["tool"].keys():
+            if vpkg_sftw["tool"][idx]["install_statu"] == False:
+                continue
+            for k, vlist in vpkg_sftw["tool"][idx]["env_arg"].items():
+                val = ";".join(vlist)
+                # 找已有同名 key（大小写不敏感），不存在就用 k
+                existing = next((ek for ek in shell_var if ek.lower() == k.lower()), None)
+                if existing:
+                    shell_var[existing] = "%s;%s" % (shell_var[existing], val)
+                else:
+                    shell_var[k] = val
+        shell_var[path_key] = "%s;%s" % (shell_var[path_key], vpkg_root_tree["root_script"])
+        if os.name == "nt":
+            new_shell_arg = "title vpkg && prompt (vpkg) $P$G"
+            subprocess.run(["cmd", "/k", new_shell_arg], env=shell_var)
+            sys.exit(0)
+        return vpkg_placeHolder
+    def _cmd_install(cmd_valu): # 命令_安装软件
+        def _get_file_and_dir(aim_path):
+            file_list = list()
+            dir_list = list()
+            for idx in os.scandir(aim_path):
+                if idx.is_file():
+                    file_list.append(idx.path)
+                if idx.is_dir():
+                    dir_list.append(idx.path)
+            return (file_list,dir_list)
+        def _get_differ_item(listA,listB):
+            differ_list = list()
+            for item in listB:
+                if item not in listA:
+                    differ_list.append(item)
+            return differ_list
+        def _get_stop_dir(aim_path):
+            current = aim_path
+            while True:
+                entries = os.listdir(current)
+                # 过滤掉隐藏文件（按需保留/删除这一行）
+                entries = [e for e in entries if not e.startswith('.')]
+                # 子目录列表
+                subdirs = [e for e in entries if os.path.isdir(os.path.join(current, e))]
+                # 停止条件：不是「只有一个子目录且没有其他内容」
+                if len(entries) != 1 or len(subdirs) != 1:
+                    return current
+                # 继续向下
+                current = os.path.join(current, subdirs[0])
+        def _install_script(script_name):
+            if script_name not in vpkg_sftw["script"].keys():
+                log_erro("erro->not exist script config...>%s<"%(script_name))
+                return vpkg_placeHolder
+            script_file = vpkg_sftw["script"][script_name]["name"]
+            script_root = vpkg_sftw["script"][script_name]["local_path"]
+            script_path = "%s/%s"%(script_root,script_file)
+            script_content = vpkg_sftw["script"][script_name]["content"]
+            with open(script_path,"w") as f:
+                f.write(script_content)
+            return vpkg_placeHolder
+        def _install_sftw(tool_name):
+            cache_dir = vpkg_root_tree["root_cache"]        # 缓存目录
+            extra_dir = cache_dir+"/extra_dir"              # 解压目录
+            _clean_dir(cache_dir)                         # 清空缓存目录
+            if os.path.exists(extra_dir)==False:
+                os.makedirs(extra_dir,exist_ok=True)
+            cache_init_file, cache_init_dir = _get_file_and_dir(cache_dir) # 扫描文件夹和文件夹
+            # (01)逐项下载文件
+            for install_item in vpkg_sftw["tool"][tool_name]["install"].keys():
+                install_dir = install_item
+                download_url_list = vpkg_sftw["tool"][tool_name]["install"][install_item]
+                os.makedirs(install_dir,exist_ok=True) # 创建目录树
+                _clean_dir(install_dir)         # 清空目标安装目录
+                for url in download_url_list:   # 下载文件到缓存目录
+                    down_result = _file_download(url,cache_dir)
+                    if not down_result:
+                        log_erro("erro->abort install %s, download failed" % tool_name)
+                        return vpkg_placeHolder
+                cache_over_file, _ = _get_file_and_dir(cache_dir)
+                download_file_list = _get_differ_item(cache_init_file,cache_over_file)
+                pack_file = list()
+                move_file = list()
+                for idx in download_file_list:  # 判断文件类型并处理
+                    file = os.path.split(idx)[1]
+                    ispack_flag = False
+                    for pack_ext in vpkg_zip_ext["default"]:
+                        if file.endswith(pack_ext):     # 压缩包文件
+                            pack_file.append(idx)
+                            ispack_flag = True
+                            break
+                    if ispack_flag == False:
+                        move_file.append(idx)
+                for idx in pack_file:
+                    _clean_dir(extra_dir)
+                    _file_unzip(idx,extra_dir)
+                    unpack_dir = _get_stop_dir(extra_dir)
+                    shutil.copytree(unpack_dir,install_dir,dirs_exist_ok=True)
+                for idx in move_file:
+                    old_file = idx
+                    file = os.path.split(idx)[1]
+                    new_file = os.path.join(install_dir,file)
+                    os.rename(old_file,new_file)
+            # log_info("info->sucess install...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        def _unique_handle(tool_name):
+            if tool_name == "pixi":
+                log_info("info->install DLC(init home) for...>pixi<")
+                pixi_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
+                pixi_home = vpkg_sftw["tool"][tool_name]["local_path"]
+                _system_run_cmd("%s init %s"%(pixi_excu,pixi_home))
+                vpkg_sftw["script"]["prefix"] = {
+                    "platform": "x64-win",
+                    "name": "prefix.bat",
+                    "version": "1.0",
+                    "website": "void",
+                    "local_path": "{vpkg_script}".format(vpkg_script=vpkg_root_tree["root_script"]),
+                    "content": "@echo off\ncall {pixi_excu} shell --manifest-path {pixi_config}".format(pixi_excu=vpkg_sftw["tool"]["pixi"]["symbol_excu"],pixi_config="%s/pixi.toml"%(vpkg_sftw["tool"]["pixi"]["local_path"])),
+                    "install_statu": bool(),
+                }
+                _install_script("prefix")
+            if tool_name == "python":
+                log_info("info->install DLC(pip) for...>python<")
+                path_install = list(vpkg_sftw["tool"][tool_name]["install"].keys())[0]
+                print(path_install)
+                file_net_contorl = str()
+                file_get_pip = str()
+                file_python_excu = str()
+                for idx in os.scandir(path_install):
+                    file_path = idx.path
+                    if file_path.endswith("._pth"):
+                        file_net_contorl = file_path
+                    if file_path.endswith("get-pip.py"):
+                        file_get_pip = file_path
+                    if file_path.endswith("python.exe"):
+                        file_python_excu = file_path
+                if file_net_contorl:
+                    with open(file_net_contorl,"r") as f:
+                        new_content = f.read()
+                        new_content.replace("#import site","import site")
+                    with open(file_net_contorl,"w") as f:
+                        f.write(new_content)
+                if file_net_contorl and file_get_pip and file_python_excu:
+                    _system_run_cmd("{python} {get_pip_script}".format(python=file_python_excu,get_pip_script=file_get_pip))
+            if tool_name == "rust":
+                log_info("info->install DLC for...>rust<")
+                rust_env_arg = vpkg_sftw["tool"][tool_name]["env_arg"]
+                rustup_home = rust_env_arg["rustup_home"][0]
+                cargo_home = rust_env_arg["cargo_home"][0]
+                os.environ["rustup_home"] = rustup_home
+                os.environ["cargo_home"] = cargo_home
+                rustup_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
+                _system_run_cmd(rustup_excu)            
+            if tool_name == "lua":
+                log_info("info->install DLC(luarocks config.lua) for...>lua<")
+                lua_ver = "5.5.0"
+                lua_root = vpkg_sftw["tool"]["lua"]["local_path"]
+                lua_include = "%s/include"%(lua_root)
+                lua_excu = vpkg_sftw["tool"]["lua"]["symbol_excu"]
+                for file in os.listdir(lua_root):
+                    if file.startswith("luac") and file.endswith(".exe"):
+                        lua_excu = "%s/%s"%(lua_root,file)
+                lua_excu_copy = "%s/lua.exe"%(lua_root)
+                shutil.copy2(lua_excu,lua_excu_copy)
+                config_content = (
+                    'lua_version = "<lua_ver>"\n',
+                    'rocks_trees = {\n',
+                        '\t{name = "user",root = "<lua_root>",},\n',
+                    '}\n',
+                    'variables = {\n',
+                        '\tCC = "gcc",\n',
+                        '\tCXX = "g++",\n',
+                        '\tLINKFLAGS = "-shared",\n',
+                        '\tLUA_VERSION = "<lua_ver>",\n',
+                        '\tLUA = "<lua_excu>",\n',
+                        '\tLUA_BINDIR = "<lua_root>",\n',
+                        '\tLUA_INCDIR = "<lua_include>",\n',
+                        '\tLUA_LIBDIR = "<lua_root>",\n',
+                    '}',
+                )
+                vpkg_sftw["script"]["luarocks_config"] = {
+                    "platform": "x64-win",
+                    "name": "config.lua",
+                    "version": "v1.0",
+                    "website": "void",
+                    "local_path": lua_root,
+                    "content": "".join(config_content).replace(
+                            "<lua_ver>",lua_ver
+                        ).replace(
+                            "<lua_root>",lua_root
+                        ).replace(
+                            "<lua_excu>",lua_excu_copy
+                        ).replace(
+                            "<lua_include>",lua_include
+                        ),
+                    "install_statu": bool(),
+                }
+                _install_script("luarocks_config")
+            if tool_name == "vcpkg":
+                log_info("info->install DLC(vcpkg.exe) for...>vcpkg<")
+                vcpkg_root = vpkg_sftw["tool"][tool_name]["local_path"]
+                vcpkg_cmd = "%s/%s"%(vcpkg_root,"bootstrap-vcpkg.bat")
+                _system_run_cmd(vcpkg_cmd)
+            return vpkg_placeHolder
+        def _run(tool_name):
+            log_info("info->cheak the repo for aim sftw...")
+            if not tool_name:
+                log_erro("erro->command “install” argu is empty...")
+                return vpkg_placeHolder
+            if tool_name not in vpkg_sftw["tool"].keys():   # 检测软件是否存在软件库中
+                platform = vpkg_info["platform"]
+                repo = vpkg_config_file
+                tool_name = tool_name
+                log_erro("erro->platform...>%s<...the repo not contain...>%s<"%(platform,tool_name))
+                return vpkg_placeHolder
+            log_info("info->check the basic sftw...")
+            if _check_basic_sftw_statu == False:
+                log_erro("erro->lack of basic sftw...>%s<"%(vpkg_sftw_tool_basic))
+                return vpkg_placeHolder
+            tool_statu = vpkg_sftw["tool"][tool_name]["install_statu"]
+            if tool_statu == True:
+                log_info("info->the sftw >%s< already install!!!"%(tool_name))
+                return vpkg_placeHolder
+            # ==========================软件安装: 下载解压================================
+            _install_sftw(tool_name)
+            # ==========================软件安装: 特殊处理================================
+            _unique_handle(tool_name)
+            # ===========================================================================
+            tool_statu = os.path.exists(vpkg_sftw["tool"][tool_name]["symbol_excu"])
+            if tool_statu == False:
+                log_erro("erro->install faild...>%s<"%(tool_name))
+                return vpkg_placeHolder
+            log_info("info->install success...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        tool_name = cmd_valu
+        _run(tool_name)   
+    def _cmd_remove(cmd_valu):  # 命令_卸载软件
+        tool_name = cmd_valu
+        if tool_name in vpkg_sftw_tool_basic:
+            log_erro("erro->can not remove the basic sftw...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        if tool_name not in vpkg_sftw["tool"].keys():   # 检测软件是否存在软件库中
+            log_erro("erro->repo not exist...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        if vpkg_sftw["tool"][tool_name]["install_statu"] == False:
+            log_erro("erro->not install the sftw...>%s<"%(tool_name))
+            return vpkg_placeHolder
+        install_path = vpkg_sftw["tool"][tool_name]["local_path"]
+        install_path_father = os.path.split(install_path)[0]
+        shutil.rmtree(install_path)
+        if len(os.listdir(install_path_father))==0:
+            shutil.rmtree(install_path_father)
+        log_warn("warn->success remove sftw...>%s<"%(tool_name))
+    def _cmd_excu(cmd_valu):
+        tool_name = cmd_valu[0]
+        if tool_name not in vpkg_sftw["tool"].keys():
+            log_erro("erro->platform...>%s<...repo not exist...>%s<"%(vpkg_info["platform"],tool_name))
+            return vpkg_placeHolder
+        tool_excu = vpkg_sftw["tool"][tool_name]["symbol_excu"]
+        cmd = [tool_excu,]
+        if len(cmd_valu)>1:
+            cmd += cmd_valu[1:]
+        log_info("info->running command...\n\t%s" % " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            log_erro("erro->running command...erro exit!!!")
+        return result.returncode == 0
+    cmd_type,cmd_valu = _get_cli_arg()
+    log_warn("warn->func extra_command: %s...%s"%(cmd_type,cmd_valu))
+    if cmd_type not in vpkg_cmd:
+        log_erro("erro->vpkg not support command...>%s<"%(cmd_type))
+        return vpkg_placeHolder
+    if cmd_type == "help":
+        _cmd_help(cmd_valu)
+    if cmd_type == "list":
+        _cmd_list(cmd_valu)
+    if cmd_type == "install":
+        tool_name = vpkg_placeHolder
+        if len(cmd_valu)>0:
+            tool_name = cmd_valu[0]
+        _cmd_install(tool_name)
+    if cmd_type == "remove":
+        tool_name = vpkg_placeHolder
+        if len(cmd_valu)>0:
+            tool_name = cmd_valu[0]
+        _cmd_remove(tool_name)
+    if cmd_type == "shell":
+        _cmd_shell(cmd_valu)
+    if cmd_type == "excu":
+        _cmd_excu(cmd_valu)
+    return vpkg_placeHolder
+    
+def main():
+    init_program()
+    log_info("info->vpkg local_path...>%s<"%(vpkg_root))
+    log_info("info->vpkg config_file path...>%s<"%(vpkg_config_file))
+    log_info("info->vpkg config_file exist...>%s<"%(os.path.exists(vpkg_config_file)))
+    extra_config()
+    # ---- 优化：逐行对齐打印 vpkg_info ----
+    _info_width = max(len(k) for k in vpkg_info.keys())
+    _info_rows = ["info->vpkg_info:"]
+    for _k, _v in vpkg_info.items():
+        _info_rows.append("    {key:<{width}} -> {val}".format(key=_k, width=_info_width, val=_v))
+    log_info("\n".join(_info_rows))
+    # ------------------------------------
+    extra_command()
+
+if __name__=="__main__":
+    import os
+    import sys
+    import re
+    import shutil
+    from rich import print
+    import subprocess
+
+    main()

@@ -1,1813 +1,1973 @@
+//lastEdit=>2026.11.06-01:03
 //lastEdit=>2026.11.04-00:43
 //lastEdit=>2026.11.03-00:41
 //creat:2026.11.03
+// gcc -std=c99 -O2 -Wall vpkg.c -o vpkg_c.exe
 /*
     reference: vpkg.py[2026.11.03]
     build: llvm_mingw
     writeby: deepseek
     bug->安装软件A后再安装软件B,不会自动清空extra_dir,压缩包解压的clean_dir(extra_dir)失效
 */
-/* vpkg.c — 单文件纯 C 实现 vpkg v20261102
- * 包含: excu 命令 + extra_dir 严格清理 + 长路径(\\?\)支持 + remove 两步删除
+/* vpkg.c - 单文件 C 实现 (对应 vpkg.py)
+ * lastEdit: 2026.11.06
+ * creat:    2026.11.06
+ * aut:      vgtxc (port)
+ * 依赖:     仅 C 标准库 + Windows API(可选 POSIX)
  */
-#define _CRT_SECURE_NO_WARNINGS
+/*
+    deepseek prompt
+    1.需求：使用纯c实现vpkg.py的全部功能；(0)必须使用c单文件实现所有功能; (1)c与py的逻辑必须完全一致；(2)c与py变量名函数的命名规则必须完全一致，严禁随意改变大小写; (3)c禁止随意使用第三方库, 头文件尽量少; (4)c在内部使用链表实现list和dict结构, 结构体名称必须分别为str_list, kv_map，实现增删改查时直接修改链表本身而非复制链表后修改，使用函数重载功能，保证str_list与kv_map的增删改查的函数名相同; (5)c内部处结构体和辅助函数外, 一切能闭包的函数全部闭包, 最好能与py的闭包保持一致; (6)需要考虑超长路径名称;
+    2.文件说明: readme.txt为项目整体说明, vpkg.py为python源文件, vpkg_config.txt为配置文件;
+*/
+/* vpkg.c - C99 implementation of vpkg.py
+ * lastEdit: 2026.11.07
+ * 编译: gcc -O2 -std=c11 -o vpkg.exe vpkg.c
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <ctype.h>
+
+#ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
+#include <io.h>
+#include <process.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#  define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+#else
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+#endif
 
-#define MAXP 1024
-#define MAXB (MAXP*4)
+/* ============================================================
+ * 数据结构: str_list / kv_map
+ * ============================================================ */
+typedef enum { VAL_STR, VAL_BOOL, VAL_DICT, VAL_LIST } val_type;
+typedef struct str_node { char *value; struct str_node *next; } str_node;
+typedef struct str_list { str_node *head, *tail; size_t size; } str_list;
+typedef struct kv_map kv_map;
+typedef struct value {
+    val_type type;
+    union { char *str; int bool_val; kv_map *dict_val; str_list *list_val; } as;
+} value;
+typedef struct kv_node { char *key; value val; struct kv_node *next; } kv_node;
+struct kv_map { kv_node *head, *tail; size_t size; };
 
-/* ======================= 0. 彩色日志 ======================= */
-#define COL_GREEN "\033[32m"
-#define COL_BLUE  "\033[34m"
-#define COL_RED   "\033[31m"
-#define COL_RESET "\033[0m"
-
-void enable_ansi(void){
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE); DWORD m=0;
-    if(GetConsoleMode(h,&m)){ m|=0x0004; SetConsoleMode(h,m); }
-    SetConsoleOutputCP(65001);
-}
-void log_info(const char *fmt,...){
-    va_list ap; printf(COL_GREEN); va_start(ap,fmt); vprintf(fmt,ap); va_end(ap); printf(COL_RESET "\n");
-}
-void log_warn(const char *fmt,...){
-    va_list ap; printf(COL_BLUE);  va_start(ap,fmt); vprintf(fmt,ap); va_end(ap); printf(COL_RESET "\n");
-}
-void log_erro(const char *fmt,...){
-    va_list ap; printf(COL_RED);   va_start(ap,fmt); vprintf(fmt,ap); va_end(ap); printf(COL_RESET "\n");
+/* ============================================================
+ * 基础辅助
+ * ============================================================ */
+static int os_is_win(void) {
+#ifdef _WIN32
+    return 1;
+#else
+    return 0;
+#endif
 }
 
-/* ======================= 1. 字符串辅助 ======================= */
-static char *str_dup(const char *s){
-    if(!s) return NULL; size_t n=strlen(s);
-    char *r=(char*)malloc(n+1); memcpy(r,s,n+1); return r;
+static char *xstrdup(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char *p = (char *)malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
 }
-static char *str_replace_all(const char *src,const char *old_s,const char *new_s){
-    if(!src) return NULL;
-    if(!old_s||!*old_s||!new_s) return str_dup(src);
-    size_t sl=strlen(src), ol=strlen(old_s), nl=strlen(new_s);
-    size_t cap = sl+32; char *out=(char*)malloc(cap); size_t oc=0;
-    const char *p=src;
-    while(1){
-        const char *hit=strstr(p,old_s);
-        size_t seg = hit? (size_t)(hit-p): strlen(p);
-        if(oc+seg+nl+1>cap){ cap=(oc+seg+nl+1)*2; out=(char*)realloc(out,cap); }
-        memcpy(out+oc,p,seg); oc+=seg;
-        if(!hit) break;
-        memcpy(out+oc,new_s,nl); oc+=nl; p=hit+ol;
+
+/* 修复: 不使用 va_copy —— 每次循环从 va_start 重启, 避免参数读取错位 */
+static char *xfmt(const char *fmt, ...) {
+    va_list ap;
+    size_t cap = 512;
+    char *buf = (char *)malloc(cap);
+    while (buf) {
+        va_start(ap, fmt);
+        int n = vsnprintf(buf, cap, fmt, ap);
+        va_end(ap);
+        if (n >= 0 && (size_t)n < cap) return buf;
+        free(buf);
+        cap *= 2;
+        if (cap > 65536) return xstrdup("");
+        buf = (char *)malloc(cap);
     }
-    out[oc]=0; return out;
+    return xstrdup("");
 }
-static int str_starts_with(const char *s,const char *pre){ return strncmp(s,pre,strlen(pre))==0; }
-static int str_ends_with(const char *s,const char *suf){
-    size_t sl=strlen(s), fl=strlen(suf); return sl>=fl && strcmp(s+sl-fl,suf)==0;
+
+static char *str_replace_all(const char *src, const char *from, const char *to) {
+    if (!src) return xstrdup("");
+    if (!from || !*from || !to) return xstrdup(src);
+    size_t lf = strlen(from), lt = strlen(to), n = 0;
+    const char *p = src;
+    while ((p = strstr(p, from)) != NULL) { n++; p += lf; }
+    size_t out_len = strlen(src) + n * (lt > lf ? lt - lf : 0) + 1;
+    char *out = (char *)malloc(out_len); if (!out) return xstrdup("");
+    char *w = out; const char *cur = src;
+    while (1) {
+        const char *hit = strstr(cur, from);
+        if (!hit) { strcpy(w, cur); break; }
+        size_t seg = (size_t)(hit - cur);
+        memcpy(w, cur, seg); w += seg;
+        memcpy(w, to, lt); w += lt;
+        cur = hit + lf;
+    }
+    return out;
 }
-static char *str_trim_inplace(char *s){
-    while(*s && isspace((unsigned char)*s)) s++;
-    if(!*s) return s;
-    char *e=s+strlen(s)-1;
-    while(e>s && isspace((unsigned char)*e)) *e--=0;
+
+static char *path_join(const char *a, const char *b) {
+    if (!a) return xstrdup(b ? b : "");
+    if (!b) return xstrdup(a);
+    size_t la = strlen(a), lb = strlen(b);
+    char *out = (char *)malloc(la + lb + 2); if (!out) return NULL;
+    memcpy(out, a, la); size_t pos = la;
+    if (la > 0 && out[la-1] != '/' && out[la-1] != '\\') out[pos++] = '/';
+    memcpy(out + pos, b, lb); out[pos + lb] = 0;
+    return out;
+}
+static char *path_dir(const char *p) {
+    if (!p) return xstrdup("");
+    char *s = xstrdup(p); if (!s) return NULL;
+    for (long i = (long)strlen(s) - 1; i >= 0; i--)
+        if (s[i] == '/' || s[i] == '\\') { s[i] = 0; break; }
     return s;
 }
-static int str_in_list(const char *s,const char *const *list,int n){
-    for(int i=0;i<n;i++) if(list[i] && strcmp(s,list[i])==0) return 1;
-    return 0;
+static char *path_base(const char *p) {
+    if (!p) return xstrdup("");
+    const char *sep = strrchr(p, '/'), *sep2 = strrchr(p, '\\');
+    if (sep2 && (!sep || sep2 > sep)) sep = sep2;
+    return xstrdup(sep ? sep + 1 : p);
 }
-static void splitext(const char *path,char **out_name,char **out_ext){
-    const char *slash=strrchr(path,'/');
-    const char *bslash=strrchr(path,'\\');
-    const char *sep=(slash>bslash)?slash:bslash;
-    const char *base= sep? sep+1: path;
-    const char *dot=strrchr(base,'.');
-    if(!dot){ *out_name=str_dup(base); *out_ext=str_dup(""); return; }
-    size_t n=(size_t)(dot-base);
-    *out_name=(char*)malloc(n+1); memcpy(*out_name,base,n); (*out_name)[n]=0;
-    *out_ext=str_dup(dot);
+static int path_exists(const char *p) {
+    if (!p) return 0;
+#ifdef _WIN32
+    return _access(p, 0) == 0;
+#else
+    return access(p, F_OK) == 0;
+#endif
 }
-
-/* ======================= 2. 双链表：str_list ======================= */
-typedef struct str_node { char *data; struct str_node *prev, *next; } str_node;
-typedef struct { str_node *head, *tail; int count; } str_list;
-
-static void list_init(str_list *l){ l->head=l->tail=NULL; l->count=0; }
-static void list_push(str_list *l, const char *s){
-    str_node *n = (str_node*)calloc(1,sizeof(str_node));
-    n->data = str_dup(s);
-    n->prev = l->tail; n->next = NULL;
-    if(l->tail) l->tail->next = n; else l->head = n;
-    l->tail = n; l->count++;
-}
-static void list_free(str_list *l){
-    str_node *p = l->head;
-    while(p){ str_node *nx = p->next; free(p->data); free(p); p = nx; }
-    l->head=l->tail=NULL; l->count=0;
-}
-static int list_contains(str_list *l, const char *s){
-    for(str_node *p=l->head;p;p=p->next) if(strcmp(p->data,s)==0) return 1;
-    return 0;
-}
-
-/* ======================= 3. 双链表：url_kv_map ======================= */
-typedef struct url_kv { char *key; str_list values; struct url_kv *prev, *next; } url_kv;
-typedef struct { url_kv *head, *tail; int count; } url_kv_map;
-
-static void url_kv_map_init(url_kv_map *m){ m->head=m->tail=NULL; m->count=0; }
-static url_kv *url_kv_find(url_kv_map *m, const char *key){
-    for(url_kv *p=m->head;p;p=p->next) if(strcmp(p->key,key)==0) return p;
-    return NULL;
-}
-static url_kv *url_kv_get_or_create(url_kv_map *m, const char *key){
-    url_kv *kv = url_kv_find(m,key); if(kv) return kv;
-    kv = (url_kv*)calloc(1,sizeof(url_kv));
-    kv->key = str_dup(key); list_init(&kv->values);
-    kv->prev = m->tail; kv->next = NULL;
-    if(m->tail) m->tail->next = kv; else m->head = kv;
-    m->tail = kv; m->count++;
-    return kv;
-}
-static void url_kv_map_free(url_kv_map *m){
-    url_kv *p = m->head;
-    while(p){ url_kv *nx = p->next; free(p->key); list_free(&p->values); free(p); p = nx; }
-    m->head=m->tail=NULL; m->count=0;
-}
-
-/* ======================= 4. 双链表：sftw_dict ======================= */
-typedef struct sftw_item {
-    char *key;
-    char *platform;
-    char *name;
-    char *version;
-    char *website;
-    char *local_path;
-    char *symbol_excu;
-    char *content;
-    url_kv_map install;
-    url_kv_map env_arg;
-    int   install_statu;
-    struct sftw_item *prev, *next;
-} sftw_item;
-
-typedef struct { sftw_item *head, *tail; int count; } sftw_dict;
-
-static void sftw_dict_init(sftw_dict *d){ d->head=d->tail=NULL; d->count=0; }
-static sftw_item *sftw_find(sftw_dict *d, const char *key){
-    for(sftw_item *p=d->head;p;p=p->next) if(strcmp(p->key,key)==0) return p;
-    return NULL;
-}
-static sftw_item *sftw_add(sftw_dict *d, const char *key, const char *name){
-    sftw_item *it = (sftw_item*)calloc(1,sizeof(sftw_item));
-    it->key = str_dup(key);
-    it->name = str_dup(name);
-    it->platform = str_dup("");
-    it->version = str_dup("");
-    it->website = str_dup("");
-    it->local_path = str_dup("");
-    it->symbol_excu = str_dup("");
-    it->content = str_dup("");
-    it->install_statu = 0;
-    url_kv_map_init(&it->install);
-    url_kv_map_init(&it->env_arg);
-    it->prev = d->tail; it->next = NULL;
-    if(d->tail) d->tail->next = it; else d->head = it;
-    d->tail = it; d->count++;
-    return it;
-}
-static void sftw_free_item(sftw_item *it){
-    free(it->key); free(it->platform); free(it->name);
-    free(it->version); free(it->website);
-    free(it->local_path); free(it->symbol_excu); free(it->content);
-    url_kv_map_free(&it->install); url_kv_map_free(&it->env_arg);
-    free(it);
-}
-
-/* ======================= 5. 文件/目录（长路径支持） ======================= */
-
-/* 将任意路径转为 Windows 扩展路径（\\?\...），突破 MAX_PATH 限制 */
-static char *to_ext_path(const char *path){
-    if(!path || !*path) return str_dup("");
-    if(strncmp(path, "\\\\?\\", 4) == 0) return str_dup(path);
-
-    char tmp[MAXB*4];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for(char *p = tmp; *p; p++) if(*p == '/') *p = '\\';
-
-    int is_abs = 0;
-    if(tmp[0] == '\\' && tmp[1] == '\\') is_abs = 1;
-    else if(tmp[0] && tmp[1] == ':') is_abs = 1;
-
-    char abs_path[MAXB*4];
-    if(is_abs){
-        snprintf(abs_path, sizeof(abs_path), "%s", tmp);
-    }else{
-        DWORD n = GetFullPathNameA(tmp, (DWORD)sizeof(abs_path), abs_path, NULL);
-        if(n == 0 || n >= sizeof(abs_path)) return str_dup(path);
-    }
-
-    if(abs_path[0] == '\\' && abs_path[1] == '\\'){
-        char *r = (char*)malloc(strlen(abs_path) + 10);
-        sprintf(r, "\\\\?\\UNC\\%s", abs_path + 2);
-        return r;
-    }
-    char *r = (char*)malloc(strlen(abs_path) + 5);
-    sprintf(r, "\\\\?\\%s", abs_path);
-    return r;
-}
-
-static int path_exists(const char *p){
-    char *lp = to_ext_path(p);
-    DWORD a = GetFileAttributesA(lp);
-    free(lp);
-    return a != INVALID_FILE_ATTRIBUTES;
-}
-static int is_file(const char *p){
-    char *lp = to_ext_path(p);
-    DWORD a = GetFileAttributesA(lp);
-    free(lp);
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-static int is_dir(const char *p){
-    char *lp = to_ext_path(p);
-    DWORD a = GetFileAttributesA(lp);
-    free(lp);
+static int dir_exists(const char *p) {
+    if (!p || !path_exists(p)) return 0;
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st; if (stat(p, &st) != 0) return 0; return S_ISDIR(st.st_mode);
+#endif
 }
-
-/* 逐段创建目录，每段用 \\?\ 前缀避免 MAX_PATH 限制 */
-static void mkdir_recursive(const char *path){
-    char abs_path[MAXB];
-    DWORD n = GetFullPathNameA(path, (DWORD)sizeof(abs_path), abs_path, NULL);
-    if(n == 0 || n >= sizeof(abs_path)) snprintf(abs_path, sizeof(abs_path), "%s", path);
-    for(char *p = abs_path; *p; p++) if(*p == '/') *p = '\\';
-
-    char cur[MAXB]; cur[0] = 0;
-    char *p = abs_path;
-
-    if(p[0] && p[1] == ':'){
-        cur[0] = p[0]; cur[1] = ':'; cur[2] = 0;
-        p += 2;
-        if(*p == '\\'){ size_t L = strlen(cur); cur[L] = '\\'; cur[L+1] = 0; p++; }
-    }else if(p[0] == '\\' && p[1] == '\\'){
-        cur[0] = '\\'; cur[1] = '\\'; cur[2] = 0;
-        p += 2;
-        int cnt = 0;
-        while(*p && cnt < 2){
-            if(*p == '\\') cnt++;
-            size_t L = strlen(cur);
-            cur[L] = *p; cur[L+1] = 0;
-            p++;
-        }
-    }
-
-    while(*p){
-        size_t L = strlen(cur);
-        cur[L] = *p; cur[L+1] = 0;
-        if(*p == '\\'){
-            char *lp = to_ext_path(cur);
-            CreateDirectoryA(lp, NULL);
-            free(lp);
-        }
-        p++;
-    }
-    char *lp = to_ext_path(cur);
-    CreateDirectoryA(lp, NULL);
-    free(lp);
+static int mkdir_single(const char *p) {
+#ifdef _WIN32
+    return _mkdir(p) == 0;
+#else
+    return mkdir(p, 0755) == 0;
+#endif
 }
-
-/* 目录是否为空（不存在算空） */
-static int dir_is_empty(const char *path){
-    if(!path_exists(path)) return 1;
-    char *lp = to_ext_path(path);
-    char pat[MAXB*4]; snprintf(pat, sizeof(pat), "%s\\*", lp);
-    free(lp);
-    WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
-    if(h == INVALID_HANDLE_VALUE) return 1;
-    int empty = 1;
-    do{
-        if(strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        empty = 0; break;
-    }while(FindNextFileA(h, &fd));
-    FindClose(h);
-    return empty;
-}
-
-/* 递归删除（含只读、失败带 GetLastError 诊断），返回 0 成功、非 0 有失败 */
-static int rmtree(const char *path){
-    if(!path_exists(path)) return 0;
-    int err = 0;
-
-    if(is_file(path)){
-        char *lp = to_ext_path(path);
-        DWORD attr = GetFileAttributesA(lp);
-        if(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
-            SetFileAttributesA(lp, attr & ~FILE_ATTRIBUTE_READONLY);
-        if(!DeleteFileA(lp)){
-            DWORD e = GetLastError();
-            log_erro("erro->rmtree delete file failed(%lu): %s", (unsigned long)e, path);
-            err = 1;
-        }
-        free(lp);
-        return err;
+static void mkdirs(const char *p) {
+    if (!p || !*p || path_exists(p)) return;
+    char *tmp = xstrdup(p); if (!tmp) return;
+    for (char *q = tmp + 1; *q; q++) {
+        if (*q == '/' || *q == '\\') { char c = *q; *q = 0; if (!path_exists(tmp)) mkdir_single(tmp); *q = c; }
     }
-
-    /* 先枚举到列表（避免遍历时删句柄互相干扰） */
-    str_list files, dirs;
-    list_init(&files); list_init(&dirs);
-    {
-        char *lp = to_ext_path(path);
-        char pat[MAXB*4]; snprintf(pat, sizeof(pat), "%s\\*", lp);
-        free(lp);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pat, &fd);
-        if(h != INVALID_HANDLE_VALUE){
-            do{
-                if(strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-                char sub[MAXB*4];
-                snprintf(sub, sizeof(sub), "%s/%s", path, fd.cFileName);
-                if(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) list_push(&dirs, sub);
-                else                                               list_push(&files, sub);
-            }while(FindNextFileA(h, &fd));
+    if (!path_exists(tmp)) mkdir_single(tmp);
+    free(tmp);
+}
+static void rmtree_rec(const char *p) {
+    if (!p || !path_exists(p)) return;
+    if (dir_exists(p)) {
+#ifdef _WIN32
+        char *pat = xfmt("%s\\*", p); WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pat, &fd); free(pat);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+                char *full = path_join(p, fd.cFileName); rmtree_rec(full); free(full);
+            } while (FindNextFileA(h, &fd));
             FindClose(h);
         }
+        RemoveDirectoryA(p);
+#else
+        DIR *d = opendir(p);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+                char *full = path_join(p, e->d_name); rmtree_rec(full); free(full);
+            }
+            closedir(d);
+        }
+        rmdir(p);
+#endif
+    } else {
+#ifdef _WIN32
+        DeleteFileA(p);
+#else
+        unlink(p);
+#endif
     }
-    for(str_node *n = files.head; n; n = n->next) if(rmtree(n->data)) err = 1;
-    for(str_node *n = dirs.head;  n; n = n->next) if(rmtree(n->data)) err = 1;
-    list_free(&files); list_free(&dirs);
-
-    char *lp = to_ext_path(path);
-    DWORD attr = GetFileAttributesA(lp);
-    if(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
-        SetFileAttributesA(lp, attr & ~FILE_ATTRIBUTE_READONLY);
-    if(!RemoveDirectoryA(lp)){
-        DWORD e = GetLastError();
-        log_erro("erro->rmtree remove dir failed(%lu): %s", (unsigned long)e, path);
-        err = 1;
-    }
-    free(lp);
-    return err;
+}
+static char *read_whole(const char *p) {
+    if (!p) return NULL;
+    FILE *f = fopen(p, "rb"); if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) n = 0;
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t r = fread(buf, 1, (size_t)n, f); buf[r] = 0;
+    fclose(f); return buf;
+}
+static int write_whole(const char *p, const char *content) {
+    if (!p) return 0;
+    FILE *f = fopen(p, "wb"); if (!f) return 0;
+    if (content) fwrite(content, 1, strlen(content), f);
+    fclose(f); return 1;
+}
+static int copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb"); if (!in) return 0;
+    FILE *out = fopen(dst, "wb"); if (!out) { fclose(in); return 0; }
+    char buf[8192]; size_t r;
+    while ((r = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, r, out);
+    fclose(in); fclose(out); return 1;
 }
 
-/* 清空 dir 下所有文件和子目录，保留 dir 自身。返回 1 成功、0 有残留 */
-static int clear_dir_content(const char *dir){
-    if(!is_dir(dir)) return 1;
-    int ok = 1;
-
-    str_list files, dirs;
-    list_init(&files); list_init(&dirs);
-    {
-        char *lp = to_ext_path(dir);
-        char pat[MAXB*4]; snprintf(pat, sizeof(pat), "%s\\*", lp);
-        free(lp);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pat, &fd);
-        if(h != INVALID_HANDLE_VALUE){
-            do{
-                if(strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-                char sub[MAXB*4];
-                snprintf(sub, sizeof(sub), "%s/%s", dir, fd.cFileName);
-                if(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) list_push(&dirs, sub);
-                else                                               list_push(&files, sub);
-            }while(FindNextFileA(h, &fd));
-            FindClose(h);
-        }
-    }
-    for(str_node *n = files.head; n; n = n->next){
-        char *flp = to_ext_path(n->data);
-        DWORD attr = GetFileAttributesA(flp);
-        if(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
-            SetFileAttributesA(flp, attr & ~FILE_ATTRIBUTE_READONLY);
-        if(!DeleteFileA(flp)){
-            DWORD e = GetLastError();
-            log_erro("erro->clear_dir_content delete file failed(%lu): %s",
-                     (unsigned long)e, n->data);
-            ok = 0;
-        }
-        free(flp);
-    }
-    for(str_node *n = dirs.head; n; n = n->next){
-        if(rmtree(n->data)) ok = 0;
-    }
-    list_free(&files); list_free(&dirs);
-    return ok;
+/* ============================================================
+ * str_list 操作
+ * ============================================================ */
+static str_list *str_list_new(void) { return (str_list *)calloc(1, sizeof(str_list)); }
+static void str_list_add(str_list *l, const char *s, const value *unused);
+static int str_list_find(str_list *l, const char *s) {
+    if (!l || !s) return 0;
+    for (str_node *n = l->head; n; n = n->next)
+        if (strcmp(n->value, s) == 0) return 1;
+    return 0;
 }
-
-/* 严格清空目录（保留目录本身）：清内容 + 验证为空，最多 3 次重试 */
-static int reset_dir(const char *aim_path){
-    if(!path_exists(aim_path)){
-        mkdir_recursive(aim_path);
-        return path_exists(aim_path);
-    }
-    for(int i = 0; i < 3; i++){
-        clear_dir_content(aim_path);
-        if(dir_is_empty(aim_path)) return 1;
-        if(i < 2) Sleep(100);
+static char *str_list_get(str_list *l, size_t i) {
+    if (!l) return NULL;
+    str_node *n = l->head;
+    while (n && i--) n = n->next;
+    return n ? n->value : NULL;
+}
+static int str_list_remove(str_list *l, const char *s) {
+    if (!l) return 0;
+    str_node *prev = NULL;
+    for (str_node *n = l->head; n; prev = n, n = n->next) {
+        if (strcmp(n->value, s) == 0) {
+            if (prev) prev->next = n->next; else l->head = n->next;
+            if (l->tail == n) l->tail = prev;
+            free(n->value); free(n); l->size--;
+            return 1;
+        }
     }
     return 0;
 }
-
-static void clean_dir(const char *aim_path){
-    if(!path_exists(aim_path)){
-        log_warn("warn->not exists the dir...>%s<", aim_path);
-        return;
-    }
-    if(reset_dir(aim_path)) log_warn("warn->clean the dir...>%s<", aim_path);
-    else                    log_warn("warn->clean dir incomplete...>%s<", aim_path);
+static size_t str_list_size(str_list *l) { return l ? l->size : 0; }
+static void str_list_free(str_list *l) {
+    if (!l) return;
+    str_node *n = l->head;
+    while (n) { str_node *nx = n->next; free(n->value); free(n); n = nx; }
+    free(l);
+}
+static void str_list_add(str_list *l, const char *s, const value *unused) {
+    (void)unused;
+    if (!l || !s) return;
+    str_node *n = (str_node *)calloc(1, sizeof(str_node));
+    if (!n) return;
+    n->value = xstrdup(s);
+    if (l->tail) l->tail->next = n; else l->head = n;
+    l->tail = n; l->size++;
 }
 
-typedef struct { str_list files; str_list dirs; } dir_scan;
+/* ============================================================
+ * kv_map 操作
+ * ============================================================ */
+static kv_map *kv_map_new(void) { return (kv_map *)calloc(1, sizeof(kv_map)); }
+static void kv_map_free(kv_map *m);
+static void kv_map_add(kv_map *m, const char *k, const value *v) {
+    if (!m || !k || !v) return;
+    kv_node *n = (kv_node *)calloc(1, sizeof(kv_node));
+    if (!n) return;
+    n->key = xstrdup(k); n->val = *v;
+    if (m->tail) m->tail->next = n; else m->head = n;
+    m->tail = n; m->size++;
+}
+static int kv_map_find(kv_map *m, const char *k) {
+    if (!m || !k) return 0;
+    for (kv_node *n = m->head; n; n = n->next)
+        if (strcmp(n->key, k) == 0) return 1;
+    return 0;
+}
+static value *kv_map_get(kv_map *m, const char *k) {
+    if (!m || !k) return NULL;
+    for (kv_node *n = m->head; n; n = n->next)
+        if (strcmp(n->key, k) == 0) return &n->val;
+    return NULL;
+}
+static int kv_map_remove(kv_map *m, const char *k) {
+    if (!m) return 0;
+    kv_node *prev = NULL;
+    for (kv_node *n = m->head; n; prev = n, n = n->next) {
+        if (strcmp(n->key, k) == 0) {
+            if (prev) prev->next = n->next; else m->head = n->next;
+            if (m->tail == n) m->tail = prev;
+            free(n->key);
+            if (n->val.type == VAL_STR) free(n->val.as.str);
+            else if (n->val.type == VAL_DICT) kv_map_free(n->val.as.dict_val);
+            else if (n->val.type == VAL_LIST) str_list_free(n->val.as.list_val);
+            free(n); m->size--;
+            return 1;
+        }
+    }
+    return 0;
+}
+static size_t kv_map_size(kv_map *m) { return m ? m->size : 0; }
+static void kv_map_free(kv_map *m) {
+    if (!m) return;
+    kv_node *n = m->head;
+    while (n) {
+        kv_node *nx = n->next;
+        free(n->key);
+        if (n->val.type == VAL_STR) free(n->val.as.str);
+        else if (n->val.type == VAL_DICT) kv_map_free(n->val.as.dict_val);
+        else if (n->val.type == VAL_LIST) str_list_free(n->val.as.list_val);
+        free(n); n = nx;
+    }
+    free(m);
+}
 
-static dir_scan scan_dir(const char *path){
-    dir_scan ds; list_init(&ds.files); list_init(&ds.dirs);
-    char *lp = to_ext_path(path);
-    char pat[MAXB*4]; snprintf(pat, sizeof(pat), "%s\\*", lp);
-    free(lp);
-    WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
-    if(h == INVALID_HANDLE_VALUE) return ds;
-    do{
-        if(strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        char full[MAXB*4];
-        snprintf(full, sizeof(full), "%s/%s", path, fd.cFileName);
-        if(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) list_push(&ds.dirs, full);
-        else                                               list_push(&ds.files, full);
-    }while(FindNextFileA(h, &fd));
+/* ============================================================
+ * 统一"重载"宏
+ * ============================================================ */
+#define list_add(o, k, v)  _Generic((o), str_list*: str_list_add, kv_map*: kv_map_add)(o, k, v)
+#define list_find(o, k)    _Generic((o), str_list*: str_list_find, kv_map*: kv_map_find)(o, k)
+#define list_get(o, k)     _Generic((o), str_list*: str_list_get, kv_map*: kv_map_get)(o, k)
+#define list_remove(o, k)  _Generic((o), str_list*: str_list_remove, kv_map*: kv_map_remove)(o, k)
+#define list_size(o)       _Generic((o), str_list*: str_list_size, kv_map*: kv_map_size)(o)
+#define list_free(o)       _Generic((o), str_list*: str_list_free, kv_map*: kv_map_free)(o)
+
+/* ============================================================
+ * 类型化读写
+ * ============================================================ */
+static const char *_getstr(kv_map *m, const char *k) {
+    value *v = kv_map_get(m, k); return (v && v->type == VAL_STR) ? v->as.str : "";
+}
+static int _getbool(kv_map *m, const char *k) {
+    value *v = kv_map_get(m, k); return (v && v->type == VAL_BOOL) ? v->as.bool_val : 0;
+}
+static kv_map *_getdict(kv_map *m, const char *k) {
+    value *v = kv_map_get(m, k); return (v && v->type == VAL_DICT) ? v->as.dict_val : NULL;
+}
+static str_list *_getlist(kv_map *m, const char *k) {
+    value *v = kv_map_get(m, k); return (v && v->type == VAL_LIST) ? v->as.list_val : NULL;
+}
+static void _clean_val(value *v) {
+    if (v->type == VAL_STR) free(v->as.str);
+    else if (v->type == VAL_DICT) kv_map_free(v->as.dict_val);
+    else if (v->type == VAL_LIST) str_list_free(v->as.list_val);
+}
+static void _setstr(kv_map *m, const char *k, const char *s) {
+    value *v = kv_map_get(m, k);
+    if (!v) { value nv; nv.type = VAL_STR; nv.as.str = xstrdup(s ? s : ""); kv_map_add(m, k, &nv); return; }
+    _clean_val(v); v->type = VAL_STR; v->as.str = xstrdup(s ? s : "");
+}
+static void _setbool(kv_map *m, const char *k, int b) {
+    value *v = kv_map_get(m, k);
+    if (!v) { value nv; nv.type = VAL_BOOL; nv.as.bool_val = b; kv_map_add(m, k, &nv); return; }
+    _clean_val(v); v->type = VAL_BOOL; v->as.bool_val = b;
+}
+static void _setdict(kv_map *m, const char *k, kv_map *d) {
+    value *v = kv_map_get(m, k);
+    if (!v) { value nv; nv.type = VAL_DICT; nv.as.dict_val = d; kv_map_add(m, k, &nv); return; }
+    _clean_val(v); v->type = VAL_DICT; v->as.dict_val = d;
+}
+static void _setlist(kv_map *m, const char *k, str_list *l) {
+    value *v = kv_map_get(m, k);
+    if (!v) { value nv; nv.type = VAL_LIST; nv.as.list_val = l; kv_map_add(m, k, &nv); return; }
+    _clean_val(v); v->type = VAL_LIST; v->as.list_val = l;
+}
+
+/* ============================================================
+ * scandir / walk / copy_tree
+ * ============================================================ */
+static void scandir_paths(const char *p, str_list *files, str_list *dirs) {
+    if (!p) return;
+#ifdef _WIN32
+    char *pat = xfmt("%s\\*", p); WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd); free(pat);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        char *full = path_join(p, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (dirs) str_list_add(dirs, full, NULL); }
+        else { if (files) str_list_add(files, full, NULL); }
+        free(full);
+    } while (FindNextFileA(h, &fd));
     FindClose(h);
-    return ds;
+#else
+    DIR *d = opendir(p); if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char *full = path_join(p, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) { if (dirs) str_list_add(dirs, full, NULL); }
+        else { if (files) str_list_add(files, full, NULL); }
+        free(full);
+    }
+    closedir(d);
+#endif
+}
+typedef void (*walk_cb)(const char *path, const char *fname, void *ud);
+static void walk_dir(const char *p, walk_cb cb, void *ud) {
+    if (!p || !dir_exists(p)) return;
+    str_list *files = str_list_new(), *dirs = str_list_new();
+    scandir_paths(p, files, dirs);
+    for (str_node *n = files ? files->head : NULL; n; n = n->next) {
+        char *base = path_base(n->value); cb(n->value, base, ud); free(base);
+    }
+    for (str_node *n = dirs ? dirs->head : NULL; n; n = n->next) walk_dir(n->value, cb, ud);
+    str_list_free(files); str_list_free(dirs);
+}
+static void copy_tree(const char *src, const char *dst) {
+    if (!src || !dst) return;
+    mkdirs(dst);
+    str_list *files = str_list_new(), *dirs = str_list_new();
+    scandir_paths(src, files, dirs);
+    for (str_node *n = files ? files->head : NULL; n; n = n->next) {
+        char *base = path_base(n->value);
+        char *to = path_join(dst, base);
+        copy_file(n->value, to);
+        free(base); free(to);
+    }
+    for (str_node *n = dirs ? dirs->head : NULL; n; n = n->next) {
+        char *base = path_base(n->value);
+        char *to = path_join(dst, base);
+        copy_tree(n->value, to);
+        free(base); free(to);
+    }
+    str_list_free(files); str_list_free(dirs);
 }
 
-static void copy_tree(const char *src, const char *dst){
-    mkdir_recursive(dst);
-    dir_scan ds = scan_dir(src);
-    for(str_node *n = ds.files.head; n; n = n->next){
-        const char *b = strrchr(n->data, '/'); b = b ? b + 1 : n->data;
-        char d[MAXB*4]; snprintf(d, sizeof(d), "%s/%s", dst, b);
-        char *lp_src = to_ext_path(n->data);
-        char *lp_dst = to_ext_path(d);
-        CopyFileA(lp_src, lp_dst, FALSE);
-        free(lp_src); free(lp_dst);
-    }
-    for(str_node *n = ds.dirs.head; n; n = n->next){
-        const char *b = strrchr(n->data, '/'); b = b ? b + 1 : n->data;
-        char d[MAXB*4]; snprintf(d, sizeof(d), "%s/%s", dst, b);
-        copy_tree(n->data, d);
-    }
-    list_free(&ds.files); list_free(&ds.dirs);
-}
-
-static char *read_file_all(const char *path){
-    char *lp = to_ext_path(path);
-    FILE *fp = fopen(lp, "rb");
-    free(lp);
-    if(!fp) return NULL;
-    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
-    char *b = (char*)malloc(sz + 1);
-    fread(b, 1, sz, fp); b[sz] = 0; fclose(fp);
-    return b;
-}
-static int write_file_all(const char *path, const char *content){
-    char *lp = to_ext_path(path);
-    FILE *fp = fopen(lp, "wb");
-    free(lp);
-    if(!fp) return 0;
-    fwrite(content, 1, strlen(content), fp); fclose(fp);
+/* ============================================================
+ * 日志 / ANSI
+ * ============================================================ */
+static const char *vpkg_placeHolder;
+static int _ansi_enabled = -1;
+static int _enable_ansi(void) {
+    if (!os_is_win()) return 1;
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+    if (h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode)) return 0;
+    return SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) ? 1 : 0;
+#else
     return 1;
+#endif
 }
+static void _log_color(const char *color, const char *msg) {
+    if (_ansi_enabled < 0) _ansi_enabled = _enable_ansi();
+    if (_ansi_enabled) printf("%s%s\033[0m\n", color, msg ? msg : "");
+    else printf("%s\n", msg ? msg : "");
+}
+static void log_info(const char *msg) { _log_color("\033[32m", msg); }
+static void log_warn(const char *msg) { _log_color("\033[34m", msg); }
+static void log_erro(const char *msg) { _log_color("\033[31m", msg); }
 
-/* ======================= 6. 进程执行 ======================= */
-static int run_command(char *const argv[]){
-    char cl[MAXB*4]; cl[0]=0;
-    for(int i=0;argv[i];i++){
-        if(i) strcat(cl," ");
-        int need=strchr(argv[i],' ')||strchr(argv[i],'\t');
-        if(need) strcat(cl,"\"");
-        strcat(cl,argv[i]);
-        if(need) strcat(cl,"\"");
+/* ============================================================
+ * 全局变量
+ * ============================================================ */
+static char *vpkg_root;
+static char *vpkg_config_file;
+static const char *vpkg_config_default;
+static kv_map *vpkg_root_tree;
+static str_list *vpkg_config_symbol;
+static kv_map *vpkg_info;
+static str_list *vpkg_info_kwOrder;
+static kv_map *vpkg_sftw;
+static kv_map *vpkg_sftw_toolFmt;
+static kv_map *vpkg_sftw_scriptFmt;
+static str_list *vpkg_sftw_tool_kwOrder;
+static str_list *vpkg_sftw_script_kwOrder;
+static str_list *vpkg_sftw_tool_basic;
+static str_list *vpkg_cmd;
+static kv_map *vpkg_zip_ext;
+static kv_map *vpkg_download_proxy;
+
+/* ============================================================
+ * init_program
+ * ============================================================ */
+static void init_program(void) {
+#ifdef _WIN32
+    char exepath[4096];
+    DWORD n = GetModuleFileNameA(NULL, exepath, (DWORD)sizeof(exepath));
+    if (n > 0) {
+        for (long i = (long)n - 1; i >= 0; i--)
+            if (exepath[i] == '\\' || exepath[i] == '/') { exepath[i] = 0; break; }
+        for (char *p = exepath; *p; p++) if (*p == '\\') *p = '/';
+        vpkg_root = xstrdup(exepath);
+    } else vpkg_root = xstrdup(".");
+#else
+    char buf[4096]; ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = 0;
+        for (ssize_t i = n - 1; i >= 0; i--) if (buf[i] == '/') { buf[i] = 0; break; }
+        vpkg_root = xstrdup(buf);
+    } else vpkg_root = xstrdup(".");
+#endif
+    vpkg_config_file = path_join(vpkg_root, "vpkg_config.txt");
+    vpkg_config_symbol = str_list_new();
+    str_list_add(vpkg_config_symbol, "info->sftw", NULL);
+    str_list_add(vpkg_config_symbol, "info=>sftw", NULL);
+    str_list_add(vpkg_config_symbol, "info->tool", NULL);
+    str_list_add(vpkg_config_symbol, "info=>tool", NULL);
+    str_list_add(vpkg_config_symbol, "info->script", NULL);
+    str_list_add(vpkg_config_symbol, "info=>script", NULL);
+    vpkg_info = kv_map_new();
+    { const char *ks[] = {"platform","name","version","website","autor","publish","description"};
+      for (int i = 0; i < 7; i++) _setstr(vpkg_info, ks[i], "");
+      _setbool(vpkg_info, "proxy", 0); }
+    vpkg_info_kwOrder = str_list_new();
+    { const char *ks[] = {"platform","name","version","website","autor","publish","description","proxy"};
+      for (int i = 0; i < 8; i++) str_list_add(vpkg_info_kwOrder, ks[i], NULL); }
+    vpkg_sftw = kv_map_new();
+    _setdict(vpkg_sftw, "tool", kv_map_new());
+    _setdict(vpkg_sftw, "script", kv_map_new());
+    vpkg_sftw_toolFmt = kv_map_new();
+    { const char *ks[] = {"platform","name","version","website","local_path","symbol_excu"};
+      for (int i = 0; i < 6; i++) _setstr(vpkg_sftw_toolFmt, ks[i], "");
+      _setstr(vpkg_sftw_toolFmt, "install", ""); _setstr(vpkg_sftw_toolFmt, "env_arg", "");
+      _setbool(vpkg_sftw_toolFmt, "install_statu", 0); }
+    vpkg_sftw_scriptFmt = kv_map_new();
+    { const char *ks[] = {"platform","name","version","website","local_path","content"};
+      for (int i = 0; i < 6; i++) _setstr(vpkg_sftw_scriptFmt, ks[i], "");
+      _setbool(vpkg_sftw_scriptFmt, "install_statu", 0); }
+    vpkg_sftw_tool_kwOrder = str_list_new();
+    { const char *ks[] = {"platform","name","version","website","local_path","symbol_excu","install","env_arg","install_statu"};
+      for (int i = 0; i < 9; i++) str_list_add(vpkg_sftw_tool_kwOrder, ks[i], NULL); }
+    vpkg_sftw_script_kwOrder = str_list_new();
+    { const char *ks[] = {"platform","name","version","website","local_path","content","install_statu"};
+      for (int i = 0; i < 7; i++) str_list_add(vpkg_sftw_script_kwOrder, ks[i], NULL); }
+    vpkg_sftw_tool_basic = str_list_new();
+    str_list_add(vpkg_sftw_tool_basic, "a7z", NULL);
+    str_list_add(vpkg_sftw_tool_basic, "aria2", NULL);
+    vpkg_placeHolder = "ugv";
+    vpkg_cmd = str_list_new();
+    { const char *cs[] = {"help","list","install","remove","shell","excu"};
+      for (int i = 0; i < 6; i++) str_list_add(vpkg_cmd, cs[i], NULL); }
+    vpkg_root_tree = kv_map_new();
+    _setstr(vpkg_root_tree, "root_vpkg",   "{vpkg_root}");
+    _setstr(vpkg_root_tree, "root_system", "{vpkg_root}/{platform}");
+    _setstr(vpkg_root_tree, "root_tool",   "{vpkg_root}/{platform}/tool");
+    _setstr(vpkg_root_tree, "root_script", "{vpkg_root}/{platform}/script");
+    _setstr(vpkg_root_tree, "root_cache",  "{vpkg_root}/{platform}/cache");
+    _setstr(vpkg_root_tree, "root_extra",  "{vpkg_root}/{platform}/cache/extra_dir");
+    vpkg_zip_ext = kv_map_new();
+    {
+        str_list *l;
+        l = str_list_new(); { const char *v[] = {".7z", ".zip", ".rar", ".7z.exe"}; for (int i = 0; i < 4; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "single_file", l);
+        l = str_list_new(); { const char *v[] = {".7z.001", ".7z.002", ".7z.003", ".7z.004", ".7z.005", ".7z.006"}; for (int i = 0; i < 6; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "multi_7z", l);
+        l = str_list_new(); { const char *v[] = {".zip.001", ".zip.002", ".zip.003", ".zip.004", ".zip.005", ".zip.006"}; for (int i = 0; i < 6; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "multi_zip", l);
+        l = str_list_new(); { const char *v[] = {".part001.rar", ".part002.rar", ".part003.rar", ".part004.rar", ".part005.rar", ".part006.rar"}; for (int i = 0; i < 6; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "multi_rar", l);
+        l = str_list_new(); { const char *v[] = {".7z", ".zip", ".rar", ".7z.exe", ".7z.001", ".zip.001", ".part001.rar"}; for (int i = 0; i < 7; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "default", l);
+        l = str_list_new(); { const char *v[] = {".7z", ".zip", ".rar", ".7z.exe",
+            ".7z.001", ".7z.002", ".7z.003", ".7z.004", ".7z.005", ".7z.006",
+            ".zip.001", ".zip.002", ".zip.003", ".zip.004", ".zip.005", ".zip.006",
+            ".part001.rar", ".part002.rar", ".part003.rar", ".part004.rar", ".part005.rar", ".part006.rar"};
+          for (int i = 0; i < 22; i++) str_list_add(l, v[i], NULL); } _setlist(vpkg_zip_ext, "filter", l);
     }
-    STARTUPINFOA si; PROCESS_INFORMATION pi; memset(&si,0,sizeof(si)); si.cb=sizeof(si);
-    memset(&pi,0,sizeof(pi));
-    char copy[MAXB*4]; snprintf(copy,sizeof(copy),"%s",cl);
-    if(!CreateProcessA(NULL,copy,NULL,NULL,TRUE,0,NULL,NULL,&si,&pi)) return -1;
-    WaitForSingleObject(pi.hProcess,INFINITE);
-    DWORD code=0; GetExitCodeProcess(pi.hProcess,&code);
-    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return (int)code;
-}
-static int run_cmd_line(const char *cmdline){
-    STARTUPINFOA si; PROCESS_INFORMATION pi; memset(&si,0,sizeof(si)); si.cb=sizeof(si);
-    memset(&pi,0,sizeof(pi));
-    char copy[MAXB*4]; snprintf(copy,sizeof(copy),"%s",cmdline);
-    if(!CreateProcessA(NULL,copy,NULL,NULL,TRUE,0,NULL,NULL,&si,&pi)) return -1;
-    WaitForSingleObject(pi.hProcess,INFINITE);
-    DWORD code=0; GetExitCodeProcess(pi.hProcess,&code);
-    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return (int)code;
-}
-
-/* ======================= 7. 全局变量 ======================= */
-char *vpkg_root=NULL;
-char *vpkg_config_file=NULL;
-char *vpkg_root_tree[5]={NULL,NULL,NULL,NULL,NULL};
-const char *vpkg_root_tree_keys[5]={"root_vpkg","root_system","root_tool","root_script","root_cache"};
-const char *vpkg_config_symbol[6]={
-    "info->sftw","info=>sftw","info->tool","info=>tool","info->script","info=>script"
-};
-struct {
-    char *platform,*name,*version,*website,*autor,*publish,*description;
-    int   proxy;
-} vpkg_info;
-const char *vpkg_info_kwOrder[8]={
-    "platform","name","version","website","autor","publish","description","proxy"
-};
-const char *vpkg_sftw_tool_basic[2]={"a7z","aria2"};
-const char *vpkg_placeHolder="ugv";
-const char *vpkg_cmd[6]={"help","list","install","remove","shell","excu"};
-sftw_dict vpkg_sftw_tool;
-sftw_dict vpkg_sftw_script;
-url_kv_map vpkg_download_proxy;
-
-const char *vpkg_zip_default[7]={
-    ".7z",".zip",".rar",".7z.exe",".7z.001",".zip.001",".part001.rar"
-};
-const char *vpkg_zip_filter[22]={
-    ".7z",".zip",".rar",".7z.exe",
-    ".7z.001",".7z.002",".7z.003",".7z.004",".7z.005",".7z.006",
-    ".zip.001",".zip.002",".zip.003",".zip.004",".zip.005",".zip.006",
-    ".part001.rar",".part002.rar",".part003.rar",".part004.rar",".part005.rar",".part006.rar"
-};
-#define ROOT_VPKG   (vpkg_root_tree[0])
-#define ROOT_SYSTEM (vpkg_root_tree[1])
-#define ROOT_TOOL   (vpkg_root_tree[2])
-#define ROOT_SCRIPT (vpkg_root_tree[3])
-#define ROOT_CACHE  (vpkg_root_tree[4])
-
-/* ======================= 8. init_program ======================= */
-static void add_install(sftw_item *it,const char *k,const char *v){
-    url_kv *kv=url_kv_get_or_create(&it->install,k); list_push(&kv->values,v);
-}
-static void add_env(sftw_item *it,const char *k,const char *v){
-    url_kv *kv=url_kv_get_or_create(&it->env_arg,k); list_push(&kv->values,v);
-}
-static void add_download_proxy(const char *from,const char *to){
-    url_kv *kv=url_kv_get_or_create(&vpkg_download_proxy,from);
-    list_push(&kv->values,to);
-}
-static sftw_item *add_tool(const char *name,const char *version,const char *website,
-                           const char *local_path,const char *symbol_excu){
-    sftw_item *it=sftw_find(&vpkg_sftw_tool,name);
-    if(!it) it=sftw_add(&vpkg_sftw_tool,name,name);
-    free(it->platform); it->platform=str_dup("x64-win");
-    free(it->version);  it->version =str_dup(version);
-    free(it->website);  it->website =str_dup(website);
-    free(it->local_path); it->local_path=str_dup(local_path);
-    free(it->symbol_excu); it->symbol_excu=str_dup(symbol_excu);
-    return it;
-}
-static sftw_item *add_script(const char *key,const char *name,const char *version,
-                             const char *website,const char *local_path,const char *content){
-    sftw_item *it=sftw_find(&vpkg_sftw_script,key);
-    if(!it) it=sftw_add(&vpkg_sftw_script,key,name);
-    free(it->platform); it->platform=str_dup("x64-win");
-    free(it->version);  it->version =str_dup(version);
-    free(it->website);  it->website =str_dup(website);
-    free(it->local_path); it->local_path=str_dup(local_path);
-    free(it->content);  it->content =str_dup(content);
-    return it;
-}
-
-static void _item_default(void){
-    vpkg_info.platform    = str_dup("x64-win");
-    vpkg_info.name        = str_dup("vpkg");
-    vpkg_info.version     = str_dup("v20261102");
-    vpkg_info.website     = str_dup("https://github.com/vgtxc/vpkg.git");
-    vpkg_info.autor       = str_dup("vgtxc");
-    vpkg_info.publish     = str_dup("None");
-    vpkg_info.description = str_dup("A lightWight sftw manager!!!");
-    vpkg_info.proxy       = 1;
-
-    free(ROOT_VPKG);   ROOT_VPKG   = str_dup("{vpkg_root}");
-    free(ROOT_SYSTEM); ROOT_SYSTEM = str_dup("{vpkg_root}/{platform}");
-    free(ROOT_TOOL);   ROOT_TOOL   = str_dup("{vpkg_root}/{platform}/tool");
-    free(ROOT_SCRIPT); ROOT_SCRIPT = str_dup("{vpkg_root}/{platform}/script");
-    free(ROOT_CACHE);  ROOT_CACHE  = str_dup("{vpkg_root}/{platform}/cache");
-
-    add_download_proxy("https://github.com/",              "https://xget.xi-xu.me/gh/");
-    add_download_proxy("https://gist.github.com/",         "https://xget.xi-xu.me/gist/");
-    add_download_proxy("https://gitlab.com/",              "https://xget.xi-xu.me/gl/");
-    add_download_proxy("https://gitea.com/",               "https://xget.xi-xu.me/gitea/");
-    add_download_proxy("https://codeberg.org/",            "https://xget.xi-xu.me/codeberg/");
-    add_download_proxy("https://sourceforge.net/",         "https://xget.xi-xu.me/sf/");
-    add_download_proxy("https://android.googlesource.com/","https://xget.xi-xu.me/aosp/");
-    add_download_proxy("https://huggingface.co/",          "https://xget.xi-xu.me/hf/");
-    add_download_proxy("https://civitai.com/",             "https://xget.xi-xu.me/civitai/");
-    add_download_proxy("https://registry.npmjs.org/",      "https://xget.xi-xu.me/npm/");
-    add_download_proxy("https://pypi.org/",                "https://xget.xi-xu.me/pypi/");
-    add_download_proxy("https://repo.anaconda.com/",       "https://xget.xi-xu.me/conda/");
-    add_download_proxy("https://conda.anaconda.org/",      "https://xget.xi-xu.me/conda/community/");
-    add_download_proxy("https://repo1.maven.org/",         "https://xget.xi-xu.me/maven/");
-    add_download_proxy("https://downloads.apache.org/",    "https://xget.xi-xu.me/apache/");
-    add_download_proxy("https://plugins.gradle.org/",      "https://xget.xi-xu.me/gradle/");
-    add_download_proxy("https://github.com/Homebrew/",     "https://xget.xi-xu.me/homebrew/");
-    add_download_proxy("https://rubygems.org/",            "https://xget.xi-xu.me/rubygems/");
-    add_download_proxy("https://cran.r-project.org/",      "https://xget.xi-xu.me/cran/");
-    add_download_proxy("https://www.cpan.org/",            "https://xget.xi-xu.me/cpan/");
-    add_download_proxy("https://tug.ctan.org/",            "https://xget.xi-xu.me/ctan/");
-    add_download_proxy("https://proxy.golang.org/",        "https://xget.xi-xu.me/golang/");
-    add_download_proxy("https://api.nuget.org/",           "https://xget.xi-xu.me/nuget/");
-    add_download_proxy("https://crates.io/",               "https://xget.xi-xu.me/crates/");
-    add_download_proxy("https://repo.packagist.org/",      "https://xget.xi-xu.me/packagist/");
-    add_download_proxy("https://dl.flathub.org/",          "https://xget.xi-xu.me/flathub/");
-    add_download_proxy("https://deb.debian.org/",          "https://xget.xi-xu.me/debian/");
-    add_download_proxy("https://archive.ubuntu.com/",      "https://xget.xi-xu.me/ubuntu/");
-    add_download_proxy("https://mirrors.kernel.org/fedora/","https://xget.xi-xu.me/fedora/");
-    add_download_proxy("https://download.rockylinux.org/", "https://xget.xi-xu.me/rocky/");
-    add_download_proxy("https://download.opensuse.org/",   "https://xget.xi-xu.me/opensuse/");
-    add_download_proxy("https://geo.mirror.pkgbuild.com/", "https://xget.xi-xu.me/arch/");
-    add_download_proxy("https://arxiv.org/",               "https://xget.xi-xu.me/arxiv/");
-    add_download_proxy("https://f-droid.org/",             "https://xget.xi-xu.me/fdroid/");
-    add_download_proxy("https://updates.jenkins.io/",      "https://xget.xi-xu.me/jenkins/");
-
-    const char *LP="{vpkg_tool}/<name>/<version>";
-    sftw_item *it;
-
-    it=add_tool("a7z","v26.04","https://www.7-zip.org/",LP,"<local_path>/7za.exe");
-    add_install(it,"<local_path>","https://github.com/ip7z/7zip/releases/download/26.04/7z2604-extra.7z");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("aria2","v1.37.0","https://github.com/aria2/aria2",LP,"<local_path>/aria2c.exe");
-    add_install(it,"<local_path>","https://github.com/aria2/aria2/releases/latest/download/aria2-1.37.0-win-64bit-build1.zip");
-    add_env(it,"aria2_home","<local_path>");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("ffmpeg","v.latest","https://github.com/BtbN/FFmpeg-Builds",LP,"<local_path>/bin/ffmpeg.exe");
-    add_install(it,"<local_path>","https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("git","v2.55.0","https://git-scm.com/",LP,"<local_path>/bin/git.exe");
-    add_install(it,"<local_path>","https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe");
-    add_env(it,"path","<local_path>");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("pixi","v0.80.0","https://github.com/prefix-dev/pixi",LP,"<local_path>/pixi.exe");
-    add_install(it,"<local_path>","https://github.com/prefix-dev/pixi/releases/download/v0.80.0/pixi-x86_64-pc-windows-msvc.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("uv","v0.12.13","https://github.com/astral-sh/uv",LP,"<local_path>/uv.exe");
-    add_install(it,"<local_path>","https://releases.astral.sh/github/uv/releases/download/0.12.13/uv-x86_64-pc-windows-msvc.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("cmake","v4.5.0-rc1","https://github.com/Kitware/CMake",LP,"<local_path>/bin/cmake.exe");
-    add_install(it,"<local_path>","https://github.com/Kitware/CMake/releases/download/v4.5.0-rc1/cmake-4.5.0-rc1-windows-x86_64.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("xmake","v3.1.1","https://github.com/xmake-io/xmake",LP,"<local_path>/xmake.exe");
-    add_install(it,"<local_path>","https://github.com/xmake-io/xmake/releases/download/v3.1.1/xmake-v3.1.1.win64.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("vcpkg","v20260926","https://github.com/microsoft/vcpkg-tool",LP,"<local_path>/vcpkg.exe");
-    add_install(it,"<local_path>","https://github.com/microsoft/vcpkg-tool/releases/download/2026-09-26/vcpkg.exe");
-    add_env(it,"path","<local_path>");
-    add_env(it,"vcpkg_root","<local_path>");
-
-    it=add_tool("nodejs","v26.8.2","https://nodejs.org",LP,"<local_path>/node.exe");
-    add_install(it,"<local_path>","https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip");
-    add_env(it,"path","<local_path>");
-    add_env(it,"path","<local_path>/node_modules");
-    add_env(it,"path","<local_path>/node_pkg");
-    add_env(it,"npm_config_prefix","<local_path>/npm_pkg");
-    add_env(it,"npm_config_cache","<local_path>/npm_cache");
-
-    it=add_tool("python","v3.15.2","https://www.python.org",LP,"<local_path>/python.exe");
-    add_install(it,"<local_path>","https://www.python.org/ftp/python/3.15.2/python-3.15.2-embed-amd64.zip");
-    add_install(it,"<local_path>","https://bootstrap.pypa.io/get-pip.py");
-    add_env(it,"path","<local_path>");
-    add_env(it,"path","<local_path>/Scripts");
-
-    it=add_tool("rust","v1.98.1","https://rust-lang.org/",LP,"<local_path>/rustup-init.exe");
-    add_install(it,"<local_path>","https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe");
-    add_env(it,"rustup_home","<local_path>/rustup_home");
-    add_env(it,"cargo_home","<local_path>/cargo_home");
-    add_env(it,"path","<local_path>");
-    add_env(it,"path","<local_path>/cargo_home/bin");
-    add_env(it,"path","<local_path>/rustup_home");
-
-    it=add_tool("java","v26","https://www.java.com",LP,"<local_path>/java.exe");
-    add_install(it,"<local_path>","https://download.oracle.com/java/26/latest/jdk-26_windows-x64_bin.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("golang","v1.27.1","https://golang.google.cn/",LP,"<local_path>/go.exe");
-    add_install(it,"<local_path>","https://golang.google.cn/dl/go1.27.1.windows-amd64.zip");
-    add_env(it,"go_root","<local_path>");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("zig","v0.17.0","https://ziglang.org/",LP,"<local_path>/zig.exe");
-    add_install(it,"<local_path>","https://ziglang.org/builds/zig-x86_64-windows-0.17.0-dev.2125+0d600e488.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("vlang","v0.5","https://vlang.io/",LP,"<local_path>/v.exe");
-    add_install(it,"<local_path>","https://github.com/vlang/v/releases/latest/download/v_windows.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("lua","v5.5.0","https://www.lua.org/",LP,"<local_path>/lua55.exe");
-    add_install(it,"<local_path>","https://sourceforge.net/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip");
-    add_install(it,"<local_path>","https://sourceforge.net/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip");
-    add_install(it,"<local_path>","https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip");
-    add_env(it,"luarocks_config","<local_path>/config.lua");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("mingw_w64","v16.2.0","https://github.com/niXman/mingw-builds-binaries",LP,"<local_path>/bin/gcc.exe");
-    add_install(it,"<local_path>","https://github.com/niXman/mingw-builds-binaries/releases/download/16.2.0-rt_v14-rev1/x86_64-16.2.0-release-posix-seh-ucrt-rt_v14-rev1.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("llvm_mingw","v20260908","https://github.com/mstorsjo/llvm-mingw",LP,"<local_path>/bin/gcc.exe");
-    add_install(it,"<local_path>","https://github.com/mstorsjo/llvm-mingw/releases/download/20260908/llvm-mingw-20260908-ucrt-x86_64.zip");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("llvm_msvc","v777.3.1","https://github.com/aftermathlabs/llvm-msvc",LP,"<local_path>/bin/clang-cl.exe");
-    add_install(it,"<local_path>","https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.001");
-    add_install(it,"<local_path>","https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.002");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("llvm_winlibs","v16.2.0","https://github.com/brechtsanders/winlibs_mingw",LP,"<local_path>/bin/gcc.exe");
-    add_install(it,"<local_path>","https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-llvm-23.1.3-mingw-w64ucrt-14.0.0-r3.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("mingw_winlibs","v16.2.0","https://github.com/brechtsanders/winlibs_mingw",LP,"<local_path>/bin/gcc.exe");
-    add_install(it,"<local_path>","https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r3.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("llvm_qt","v6.11.2","https://github.com/yuanpeirong/buildQt",LP,"<local_path>/bin/qmake.exe");
-    add_install(it,"<local_path>","https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_llvm-mingw22.1.8_64_UCRT.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("mingw_qt","v6.11.2","https://github.com/yuanpeirong/buildQt",LP,"<local_path>/bin/qmake.exe");
-    add_install(it,"<local_path>","https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_mingw1620_64_UCRT.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("msvc_qt","v6.11.2","https://github.com/yuanpeirong/buildQt",LP,"<local_path>/bin/qmake.exe");
-    add_install(it,"<local_path>","https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_msvc2026_64.7z");
-    add_env(it,"path","<local_path>/bin");
-
-    it=add_tool("motrix","v2.2.1","https://motrix.app/zh/",LP,"<local_path>/Motrix.exe");
-    add_install(it,"<local_path>","https://dl.motrix.app/releases/Motrix-2.2.1-win.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("ScreenCapture","v2.5.15","https://github.com/xland/ScreenCapture",LP,"<local_path>/ScreenCapture.exe");
-    add_install(it,"<local_path>","https://github.com/xland/ScreenCapture/releases/download/2.5.15/ScreenCapture.exe");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("sharex","v22.1.0","https://github.com/ShareX/ShareX",LP,"<local_path>/ShareX.exe");
-    add_install(it,"<local_path>","https://github.com/ShareX/ShareX/releases/download/v22.1.0/ShareX-22.1.0-portable-x64.zip");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("vscode","v.lastest","https://code.visualstudio.com/",LP,"<local_path>/Code.exe");
-    add_install(it,"<local_path>","https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive");
-    add_env(it,"path","<local_path>");
-
-    it=add_tool("textadept","v13.1","https://github.com/orbitalquark/textadept/",LP,"<local_path>/textadept.exe");
-    add_install(it,"<local_path>","https://github.com/orbitalquark/textadept/releases/download/textadept_13.1/textadept_13.1.win.zip");
-    add_env(it,"path","<lcoal_path>");
-
-    it=add_tool("FlClash","v0.9.2","https://github.com/chen08209/FlClash",LP,"<local_path>/FlClash.exe");
-    add_install(it,"<local_path>","https://github.com/chen08209/FlClash/releases/download/v0.9.2/FlClash-0.9.2-windows-amd64.zip");
-    add_env(it,"path","<lcoal_path>");
-
-    it=add_tool("v2rayN","v7.25.6","https://github.com/2dust/v2rayN",LP,"<local_path>/v2rayN.exe");
-    add_install(it,"<local_path>","https://github.com/2dust/v2rayN/releases/download/7.25.6/v2rayN-windows-64.zip");
-    add_env(it,"path","<lcoal_path>");
-
-    add_script("unproxy","unproxy.bat","1.0","void","{vpkg_script}",
-        "@echo off\nset http_proxy=\nset https_proxy=\necho info-}remove the proxy\n\n");
-    add_script("proxy_clash","proxy_clash.bat","v1.0","void","{vpkg_script}",
-        "@echo off\nset http_proxy=127.0.0.1:7890\nset https_proxy=127.0.0.1:7890\necho info-}set the proxy to http://127.0.0.1:7890\n\n");
-    add_script("proxy_v2ray","proxy_v2ray.bat","v1.0","void","{vpkg_script}",
-        "@echo off\nset http_proxy=127.0.0.1:7880\nset https_proxy=127.0.0.1:7880\necho info-}set the proxy to http://127.0.0.1:7880\n\n");
-}
-
-static void init_program(void){
-    char exe[MAXP]; GetModuleFileNameA(NULL, exe, MAXP);
-    char *slash = strrchr(exe, '\\'); if(!slash) slash = strrchr(exe, '/');
-    if(slash) *slash = 0;
-    for(char *p = exe; *p; p++) if(*p == '\\') *p = '/';
-    vpkg_root = str_dup(exe);
-    char buf[MAXB]; snprintf(buf, sizeof(buf), "%s/vpkg_config.txt", vpkg_root);
-    vpkg_config_file = str_dup(buf);
-
-    sftw_dict_init(&vpkg_sftw_tool);
-    sftw_dict_init(&vpkg_sftw_script);
-    url_kv_map_init(&vpkg_download_proxy);
-
-    vpkg_info.platform=NULL; vpkg_info.name=NULL; vpkg_info.version=NULL;
-    vpkg_info.website=NULL; vpkg_info.autor=NULL;
-    vpkg_info.publish=NULL; vpkg_info.description=NULL;
-    vpkg_info.proxy=1;
-
-    _item_default();
-}
-
-/* ======================= 9. 占位符展开 ======================= */
-static char *expand_root(const char *s){
-    if(!s) return str_dup("");
-    char *r=str_dup(s),*t;
-    t=str_replace_all(r,"{vpkg_root}",ROOT_VPKG);        free(r); r=t;
-    t=str_replace_all(r,"{vpkg_system}",ROOT_SYSTEM);    free(r); r=t;
-    t=str_replace_all(r,"{vpkg_tool}",ROOT_TOOL);        free(r); r=t;
-    t=str_replace_all(r,"{vpkg_script}",ROOT_SCRIPT);    free(r); r=t;
-    t=str_replace_all(r,"{vpkg_cache}",ROOT_CACHE);      free(r); r=t;
-    t=str_replace_all(r,"{platform}",vpkg_info.platform?vpkg_info.platform:""); free(r); r=t;
-    return r;
-}
-static char *expand_keywords_tool(const char *s,sftw_item *it,int max_level){
-    if(!s) return str_dup("");
-    char *r=str_dup(s),*t;
-    t=str_replace_all(r,"<platform>",it->platform?it->platform:""); free(r); r=t;
-    t=str_replace_all(r,"<name>",it->name?it->name:"");             free(r); r=t;
-    t=str_replace_all(r,"<version>",it->version?it->version:"");    free(r); r=t;
-    if(max_level>=1){
-        t=str_replace_all(r,"<local_path>",it->local_path?it->local_path:""); free(r); r=t;
+    vpkg_download_proxy = kv_map_new();
+    {
+        const char *ps[][2] = {
+            {"https://github.com/","https://xget.xi-xu.me/gh/"},
+            {"https://gist.github.com/","https://xget.xi-xu.me/gist/"},
+            {"https://gitlab.com/","https://xget.xi-xu.me/gl/"},
+            {"https://gitea.com/","https://xget.xi-xu.me/gitea/"},
+            {"https://codeberg.org/","https://xget.xi-xu.me/codeberg/"},
+            {"https://sourceforge.net/","https://xget.xi-xu.me/sf/"},
+            {"https://android.googlesource.com/","https://xget.xi-xu.me/aosp/"},
+            {"https://huggingface.co/","https://xget.xi-xu.me/hf/"},
+            {"https://civitai.com/","https://xget.xi-xu.me/civitai/"},
+            {"https://registry.npmjs.org/","https://xget.xi-xu.me/npm/"},
+            {"https://pypi.org/","https://xget.xi-xu.me/pypi/"},
+            {"https://repo.anaconda.com/","https://xget.xi-xu.me/conda/"},
+            {"https://conda.anaconda.org/","https://xget.xi-xu.me/conda/community/"},
+            {"https://repo1.maven.org/","https://xget.xi-xu.me/maven/"},
+            {"https://downloads.apache.org/","https://xget.xi-xu.me/apache/"},
+            {"https://plugins.gradle.org/","https://xget.xi-xu.me/gradle/"},
+            {"https://github.com/Homebrew/","https://xget.xi-xu.me/homebrew/"},
+            {"https://rubygems.org/","https://xget.xi-xu.me/rubygems/"},
+            {"https://cran.r-project.org/","https://xget.xi-xu.me/cran/"},
+            {"https://www.cpan.org/","https://xget.xi-xu.me/cpan/"},
+            {"https://tug.ctan.org/","https://xget.xi-xu.me/ctan/"},
+            {"https://proxy.golang.org/","https://xget.xi-xu.me/golang/"},
+            {"https://api.nuget.org/","https://xget.xi-xu.me/nuget/"},
+            {"https://crates.io/","https://xget.xi-xu.me/crates/"},
+            {"https://repo.packagist.org/","https://xget.xi-xu.me/packagist/"},
+            {"https://dl.flathub.org/","https://xget.xi-xu.me/flathub/"},
+            {"https://deb.debian.org/","https://xget.xi-xu.me/debian/"},
+            {"https://archive.ubuntu.com/","https://xget.xi-xu.me/ubuntu/"},
+            {"https://mirrors.kernel.org/fedora/","https://xget.xi-xu.me/fedora/"},
+            {"https://download.rockylinux.org/","https://xget.xi-xu.me/rocky/"},
+            {"https://download.opensuse.org/","https://xget.xi-xu.me/opensuse/"},
+            {"https://geo.mirror.pkgbuild.com/","https://xget.xi-xu.me/arch/"},
+            {"https://arxiv.org/","https://xget.xi-xu.me/arxiv/"},
+            {"https://f-droid.org/","https://xget.xi-xu.me/fdroid/"},
+            {"https://updates.jenkins.io/","https://xget.xi-xu.me/jenkins/"},
+        };
+        for (int i = 0; i < (int)(sizeof(ps)/sizeof(ps[0])); i++) _setstr(vpkg_download_proxy, ps[i][0], ps[i][1]);
     }
-    if(max_level>=2){
-        t=str_replace_all(r,"<symbol_excu>",it->symbol_excu?it->symbol_excu:""); free(r); r=t;
-    }
-    return r;
-}
-static char *expand_cross_ref(const char *s){
-    if(!s||!strchr(s,'<')) return str_dup(s?s:"");
-    char *r=str_dup(s);
 
-    const char *tool_fields[6]={"platform","name","version","website","local_path","symbol_excu"};
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next){
-        const char *vals[6]={it->platform,it->name,it->version,it->website,it->local_path,it->symbol_excu};
-        for(int i=0;i<6;i++){
-            char pat[MAXB]; snprintf(pat,sizeof(pat),"<tool.%s.%s>",it->key,tool_fields[i]);
-            if(strstr(r,pat)){
-                char *t=str_replace_all(r,pat,vals[i]?vals[i]:""); free(r); r=t;
-            }
-        }
-    }
-    const char *script_fields[6]={"platform","name","version","website","local_path","content"};
-    for(sftw_item *it=vpkg_sftw_script.head;it;it=it->next){
-        const char *vals[6]={it->platform,it->name,it->version,it->website,it->local_path,it->content};
-        for(int i=0;i<6;i++){
-            char pat[MAXB]; snprintf(pat,sizeof(pat),"<script.%s.%s>",it->key,script_fields[i]);
-            if(strstr(r,pat)){
-                char *t=str_replace_all(r,pat,vals[i]?vals[i]:""); free(r); r=t;
-            }
-        }
-    }
-    const char *info_fields[8]={"platform","name","version","website","autor","publish","description","proxy"};
-    const char *info_vals[8]={
-        vpkg_info.platform,vpkg_info.name,vpkg_info.version,vpkg_info.website,
-        vpkg_info.autor,vpkg_info.publish,vpkg_info.description,
-        vpkg_info.proxy?"True":"False"
+    vpkg_config_default =
+"info->sftw\n"
+"    platform: x64-win\n"
+"    name: vpkg\n"
+"    version: v20261102\n"
+"    website: https://github.com/vgtxc/vpkg.git\n"
+"    autor: vgtxc\n"
+"    publish: None\n"
+"    description: A lightWight sftw manager!!!\n"
+"    proxy: False\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: a7z\n"
+"    version: v26.04\n"
+"    website: https://www.7-zip.org/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/7za.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/ip7z/7zip/releases/download/26.04/7z2604-extra.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: aria2\n"
+"    version: v1.37.0\n"
+"    website: https://github.com/aria2/aria2\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/aria2c.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/aria2/aria2/releases/latest/download/aria2-1.37.0-win-64bit-build1.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        aria2_home=<local_path>\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: wget\n"
+"    version: v1.25.0\n"
+"    website: https://eternallybored.org/misc/wget/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/wget.exe\n"
+"    init->install\n"
+"        <local_path>=https://eternallybored.org/misc/wget/releases/wget-1.25.0-win64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        wget_home=<local_path>\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: fastCapture\n"
+"    version: v11.3\n"
+"    website: https://www.faststone.org/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/FSCapture.exe\n"
+"    init->install\n"
+"        <local_path>=https://www.faststonesoft.net/DN/FSCapture113.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: ncnn_vulkan\n"
+"    version: v20250915\n"
+"    website: https://github.com/BtbN/FFmpeg-Builds\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/waifu2x-ncnn-vulkan.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: ffmpeg\n"
+"    version: v.latest\n"
+"    website: https://github.com/BtbN/FFmpeg-Builds\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/ffmpeg.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: git\n"
+"    version: v2.55.0\n"
+"    website: https://git-scm.com/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/git.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: pixi\n"
+"    version: v0.80.0\n"
+"    website: https://github.com/prefix-dev/pixi\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/pixi.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/prefix-dev/pixi/releases/download/v0.80.0/pixi-x86_64-pc-windows-msvc.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: cmake\n"
+"    version: v4.5.0-rc1\n"
+"    website: https://github.com/Kitware/CMake\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/cmake.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/Kitware/CMake/releases/download/v4.5.0-rc1/cmake-4.5.0-rc1-windows-x86_64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: xmake\n"
+"    version: v3.1.1\n"
+"    website: https://github.com/xmake-io/xmake\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/xmake.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/xmake-io/xmake/releases/download/v3.1.1/xmake-v3.1.1.win64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: vcpkg\n"
+"    version: v20261016\n"
+"    website: https://github.com/microsoft/vcpkg\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/vcpkg.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/microsoft/vcpkg/archive/refs/tags/2026.10.16.zip\n"
+"        <local_path>=https://github.com/microsoft/vcpkg-tool/releases/download/2026-09-26/vcpkg.exe\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"        vcpkg_root=<local_path>\n"
+"        vcpkg_default_triplet=x64-mingw-static\n"
+"        vcpkg_default_host_triplet=x64-mingw-static\n"
+"        X_VCPKG_ASSET_SOURCES=x-azurl,https://mirrors.tuna.tsinghua.edu.cn/vcpkg/assets/\n"
+"        VCPKG_BINARY_SOURCES=clear;x-https,https://mirrors.tuna.tsinghua.edu.cn/vcpkg-ce/cache/,readwrite\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: nodejs\n"
+"    version: v26.8.2\n"
+"    website: https://nodejs.org\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/node.exe\n"
+"    init->install\n"
+"        <local_path>=https://nodejs.org/dist/v26.8.2/node-v26.8.2-win-x64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"        path=<local_path>/node_modules\n"
+"        path=<local_path>/node_pkg\n"
+"        npm_config_prefix=<local_path>/npm_pkg\n"
+"        npm_config_cache=<local_path>/npm_cache\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: python\n"
+"    version: v3.15.2\n"
+"    website: https://www.python.org\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/python.exe\n"
+"    init->install\n"
+"        <local_path>=https://www.python.org/ftp/python/3.15.2/python-3.15.2-embed-amd64.zip\n"
+"        <local_path>=https://bootstrap.pypa.io/get-pip.py\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"        path=<local_path>/Scripts\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: rust\n"
+"    version: v1.98.1\n"
+"    website: https://rust-lang.org/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/rustup-init.exe\n"
+"    init->install\n"
+"        <local_path>=https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        rustup_home=<local_path>/rustup_home\n"
+"        cargo_home=<local_path>/cargo_home\n"
+"        path=<local_path>\n"
+"        path=<local_path>/cargo_home/bin\n"
+"        path=<local_path>/rustup_home\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: java\n"
+"    version: v27\n"
+"    website: https://www.java.com\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/java.exe\n"
+"    init->install\n"
+"        <local_path>=https://download.oracle.com/java/27/latest/jdk-27_windows-x64_bin.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: golang\n"
+"    version: v1.27.3\n"
+"    website: https://golang.google.cn/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/go.exe\n"
+"    init->install\n"
+"        <local_path>=https://go.dev/dl/go1.27.3.windows-amd64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        go_root=<local_path>\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: zig\n"
+"    version: v0.17.1\n"
+"    website: https://ziglang.org/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/zig.exe\n"
+"    init->install\n"
+"        <local_path>=https://ziglang.com.cn/download/0.17.1/zig-x86_64-windows-0.17.1.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: vlang\n"
+"    version: v0.5\n"
+"    website: https://vlang.io/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/v.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/vlang/v/releases/latest/download/v_windows.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: lua\n"
+"    version: v5.5.0\n"
+"    website: https://www.lua.org/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/lua55.exe\n"
+"    init->install\n"
+"        <local_path>=https://xget.xi-xu.me/sf/projects/luabinaries/files/5.5.0/Tools%20Executables/lua-5.5.0_Win64_bin.zip\n"
+"        <local_path>=https://xget.xi-xu.me/sf/projects/luabinaries/files/5.5.0/Windows%20Libraries/Static/lua-5.5.0_Win64_mingw6_lib.zip\n"
+"        <local_path>=https://github.com/luarocks/luarocks/releases/download/v3.12.2/luarocks-3.12.2-windows-64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        luarocks_config=<local_path>/config.lua\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: mingw_w64\n"
+"    version: v16.2.0\n"
+"    website: https://github.com/niXman/mingw-builds-binaries\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/gcc.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/niXman/mingw-builds-binaries/releases/download/16.2.0-rt_v14-rev1/x86_64-16.2.0-release-posix-seh-ucrt-rt_v14-rev1.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: llvm_mingw\n"
+"    version: v20260908\n"
+"    website: https://github.com/mstorsjo/llvm-mingw\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/gcc.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/mstorsjo/llvm-mingw/releases/download/20260908/llvm-mingw-20260908-ucrt-x86_64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: llvm_msvc\n"
+"    version: v777.3.1\n"
+"    website: https://github.com/aftermathlabs/llvm-msvc\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/clang-cl.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.001\n"
+"        <local_path>=https://github.com/aftermathlabs/llvm-msvc/releases/download/llvm-msvc-v777.3.1/windows-wrapper-llvm-msvc-PDB.zip.002\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: llvm_winlibs\n"
+"    version: v16.2.0\n"
+"    website: https://github.com/brechtsanders/winlibs_mingw\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/gcc.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-llvm-23.1.3-mingw-w64ucrt-14.0.0-r3.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: mingw_winlibs\n"
+"    version: v16.2.0\n"
+"    website: https://github.com/brechtsanders/winlibs_mingw\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/gcc.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-23.1.3-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r3.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: llvm_qt\n"
+"    version: v6.11.2\n"
+"    website: https://github.com/yuanpeirong/buildQt\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/qmake.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_llvm-mingw22.1.8_64_UCRT.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: mingw_qt\n"
+"    version: v6.11.2\n"
+"    website: https://github.com/yuanpeirong/buildQt\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/qmake.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_mingw1620_64_UCRT.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: msvc_qt\n"
+"    version: v6.11.2\n"
+"    website: https://github.com/yuanpeirong/buildQt\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/bin/qmake.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/yuanpeirong/buildQt/releases/download/Qt6.11.2_rev0/Qt_6.11.2-static-Release_msvc2026_64.7z\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>/bin\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: motrix\n"
+"    version: v2.2.1\n"
+"    website: https://motrix.app/zh/\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/Motrix.exe\n"
+"    init->install\n"
+"        <local_path>=https://dl.motrix.app/releases/Motrix-2.2.1-win.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: ScreenCapture\n"
+"    version: v2.5.15\n"
+"    website: https://github.com/xland/ScreenCapture\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/ScreenCapture.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/xland/ScreenCapture/releases/download/2.5.15/ScreenCapture.exe\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: sharex\n"
+"    version: v22.1.0\n"
+"    website: https://github.com/ShareX/ShareX\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/ShareX.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/ShareX/ShareX/releases/download/v22.1.0/ShareX-22.1.0-portable-x64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: FlClash\n"
+"    version: v0.9.2\n"
+"    website: https://github.com/chen08209/FlClash\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/FlClash.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/chen08209/FlClash/releases/download/v0.9.2/FlClash-0.9.2-windows-amd64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->tool\n"
+"    platform: x64-win\n"
+"    name: v2rayN\n"
+"    version: v7.25.6\n"
+"    website: https://github.com/2dust/v2rayN\n"
+"    local_path: {vpkg_tool}/<name>/<version>\n"
+"    symbol_excu: <local_path>/v2rayN.exe\n"
+"    init->install\n"
+"        <local_path>=https://github.com/2dust/v2rayN/releases/download/7.25.6/v2rayN-windows-64.zip\n"
+"    over->install\n"
+"    init->env_arg\n"
+"        path=<local_path>\n"
+"    over->env_arg\n"
+"info->script\n"
+"    platform: x64-win\n"
+"    name: unproxy.bat\n"
+"    version: 1.0\n"
+"    website: void\n"
+"    local_path: {vpkg_script}\n"
+"    init->content\n"
+"        @echo off\n"
+"        set http_proxy=\n"
+"        set https_proxy=\n"
+"        echo info-}remove the proxy\n"
+"    over->content\n"
+"info->script\n"
+"    platform: x64-win\n"
+"    name: proxy_clash.bat\n"
+"    version: v1.0\n"
+"    website: void\n"
+"    local_path: {vpkg_script}\n"
+"    init->content\n"
+"        @echo off\n"
+"        set http_proxy=127.0.0.1:7890\n"
+"        set https_proxy=127.0.0.1:7890\n"
+"        echo info-}set the proxy to http://127.0.0.1:7890\n"
+"    over->content\n"
+"info->script\n"
+"    platform: x64-win\n"
+"    name: proxy_v2ray.bat\n"
+"    version: v1.0\n"
+"    website: void\n"
+"    local_path: {vpkg_script}\n"
+"    init->content\n"
+"        @echo off\n"
+"        set http_proxy=127.0.0.1:7880\n"
+"        set https_proxy=127.0.0.1:7880\n"
+"        echo info-}set the proxy to http://127.0.0.1:7880\n"
+"    over->content\n";
+}
+
+/* ============================================================
+ * extra_config
+ * ============================================================ */
+static char *_resolve_placeholders(const char *text, const char *platform, const char *name,
+                                   const char *version, const char *local_path) {
+    if (!text) return NULL;
+    char *cur = xstrdup(text);
+    const char *ks[] = {"{vpkg_root}","{vpkg_system}","{vpkg_tool}","{vpkg_script}","{vpkg_cache}",
+                        "<platform>","<name>","<version>","<website>","<local_path>","<symbol_excu>"};
+    const char *vs[] = {
+        _getstr(vpkg_root_tree, "root_vpkg"), _getstr(vpkg_root_tree, "root_system"),
+        _getstr(vpkg_root_tree, "root_tool"), _getstr(vpkg_root_tree, "root_script"),
+        _getstr(vpkg_root_tree, "root_cache"),
+        platform, name, version, version, local_path, local_path
     };
-    const char *nm = vpkg_info.name? vpkg_info.name : "vpkg";
-    for(int i=0;i<8;i++){
-        char pat[MAXB]; snprintf(pat,sizeof(pat),"<sftw.%s.%s>",nm,info_fields[i]);
-        if(strstr(r,pat)){
-            char *t=str_replace_all(r,pat,info_vals[i]?info_vals[i]:""); free(r); r=t;
-        }
-    }
-    return r;
+    for (int i = 0; i < 11; i++) { char *n = str_replace_all(cur, ks[i], vs[i]); free(cur); cur = n; }
+    return cur;
 }
-
-/* ======================= 10. extra_config ======================= */
-static void _item_root_prepare(void){
-    for(int i=0;i<5;i++){
-        char *t=str_replace_all(vpkg_root_tree[i],"{vpkg_root}",vpkg_root); free(vpkg_root_tree[i]);
-        char *u=str_replace_all(t,"{platform}",vpkg_info.platform?vpkg_info.platform:""); free(t);
-        vpkg_root_tree[i]=u;
-    }
-    for(int i=0;i<5;i++){
-        if(!path_exists(vpkg_root_tree[i])){
-            mkdir_recursive(vpkg_root_tree[i]);
-            log_warn("info->creat dir...>%s<",vpkg_root_tree[i]);
-        }
-    }
+static void _syntax_panic(const char *head, str_list *block) {
+    const char *seg = strstr(head, "->");
+    log_erro(xfmt("erro->func:<extra_config>...config file “%s” syntax panic!!!", seg ? seg + 2 : head));
+    log_erro("...source config_file part as follow...");
+    { size_t total = 1; str_node *n = block->head;
+      while (n) { total += strlen(n->value) + 1; n = n->next; }
+      char *buf = (char *)calloc(1, total);
+      n = block->head;
+      while (n) { if (n != block->head) strcat(buf, "\n"); strcat(buf, n->value); n = n->next; }
+      log_warn(buf); free(buf); }
+    log_erro("...source config_file part over...");
 }
-static void _item_expand_root(void){
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next){
-        it->local_path = expand_root(it->local_path);
-        it->symbol_excu= expand_root(it->symbol_excu);
-        url_kv_map nm; url_kv_map_init(&nm);
-        for(url_kv *kv=it->install.head;kv;kv=kv->next){
-            char *nk=expand_root(kv->key);
-            url_kv *nn=url_kv_get_or_create(&nm,nk); free(nk);
-            for(str_node *v=kv->values.head;v;v=v->next){
-                char *nv=expand_root(v->data);
-                list_push(&nn->values,nv); free(nv);
-            }
-        }
-        url_kv_map_free(&it->install); it->install=nm;
-
-        url_kv_map ne; url_kv_map_init(&ne);
-        for(url_kv *kv=it->env_arg.head;kv;kv=kv->next){
-            char *nk=expand_root(kv->key);
-            url_kv *nn=url_kv_get_or_create(&ne,nk); free(nk);
-            for(str_node *v=kv->values.head;v;v=v->next){
-                char *nv=expand_root(v->data);
-                list_push(&nn->values,nv); free(nv);
-            }
-        }
-        url_kv_map_free(&it->env_arg); it->env_arg=ne;
-    }
-    for(sftw_item *it=vpkg_sftw_script.head;it;it=it->next){
-        it->local_path = expand_root(it->local_path);
-    }
+/* value 前后都 trim, 去掉 '    platform: x64-win' 中 ':' 后的前导空格 */
+static char *_extract_value(const char *line, const char *prefix) {
+    const char *val = line + strlen(prefix);
+    const char *e = val + strlen(val);
+    while (e > val && isspace((unsigned char)e[-1])) e--;
+    while (val < e && isspace((unsigned char)*val)) val++;
+    size_t len = (size_t)(e - val);
+    char *trimmed = (char *)malloc(len + 1);
+    memcpy(trimmed, val, len); trimmed[len] = 0;
+    return trimmed;
 }
-static void _item_expand_keywords(void){
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next){
-        char *lp = expand_keywords_tool(it->local_path,it,0);
-        lp = expand_cross_ref(lp); free(it->local_path); it->local_path=lp;
-
-        char *se = expand_keywords_tool(it->symbol_excu,it,1);
-        se = expand_cross_ref(se); free(it->symbol_excu); it->symbol_excu=se;
-
-        url_kv_map nm; url_kv_map_init(&nm);
-        for(url_kv *kv=it->install.head;kv;kv=kv->next){
-            char *nk = expand_keywords_tool(kv->key,it,2);
-            nk = expand_cross_ref(nk);
-            url_kv *nn=url_kv_get_or_create(&nm,nk); free(nk);
-            for(str_node *v=kv->values.head;v;v=v->next){
-                char *nv = expand_keywords_tool(v->data,it,2);
-                nv = expand_cross_ref(nv);
-                list_push(&nn->values,nv); free(nv);
-            }
-        }
-        url_kv_map_free(&it->install); it->install=nm;
-
-        url_kv_map ne; url_kv_map_init(&ne);
-        for(url_kv *kv=it->env_arg.head;kv;kv=kv->next){
-            char *nk = expand_keywords_tool(kv->key,it,2);
-            nk = expand_cross_ref(nk);
-            url_kv *nn=url_kv_get_or_create(&ne,nk); free(nk);
-            for(str_node *v=kv->values.head;v;v=v->next){
-                char *nv = expand_keywords_tool(v->data,it,2);
-                nv = expand_cross_ref(nv);
-                list_push(&nn->values,nv); free(nv);
-            }
-        }
-        url_kv_map_free(&it->env_arg); it->env_arg=ne;
-    }
-    for(sftw_item *it=vpkg_sftw_script.head;it;it=it->next){
-        char *lp = expand_keywords_tool(it->local_path,it,0);
-        lp = expand_cross_ref(lp); free(it->local_path); it->local_path=lp;
-
-        char *ct = expand_keywords_tool(it->content,it,1);
-        ct = expand_cross_ref(ct); free(it->content); it->content=ct;
-    }
-}
-static void _item_extra(void){
-    _item_root_prepare();
-    _item_expand_root();
-    _item_expand_keywords();
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next)
-        it->install_statu = is_file(it->symbol_excu)?1:0;
-}
-static void _item_check(void){
-    const char *plat=vpkg_info.platform;
-    sftw_item *p=vpkg_sftw_tool.head;
-    while(p){
-        sftw_item *nx=p->next;
-        if(strcmp(p->platform,plat)!=0){
-            if(p->prev) p->prev->next=nx; else vpkg_sftw_tool.head=nx;
-            if(p->next) p->next->prev=p->prev; else vpkg_sftw_tool.tail=p->prev;
-            sftw_free_item(p); vpkg_sftw_tool.count--;
-        }
-        p=nx;
-    }
-    sftw_item *q=vpkg_sftw_script.head;
-    while(q){
-        sftw_item *nx=q->next;
-        if(strcmp(q->platform,plat)!=0){
-            if(q->prev) q->prev->next=nx; else vpkg_sftw_script.head=nx;
-            if(q->next) q->next->prev=q->prev; else vpkg_sftw_script.tail=q->prev;
-            sftw_free_item(q); vpkg_sftw_script.count--;
-        }
-        q=nx;
-    }
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next)
-        it->install_statu = is_file(it->symbol_excu)?1:0;
-    for(sftw_item *it=vpkg_sftw_script.head;it;it=it->next){
-        char pth[MAXB]; snprintf(pth,sizeof(pth),"%s/%s",it->local_path,it->name);
-        it->install_statu = is_file(pth)?1:0;
-    }
-}
-static void _install_script(const char *filter_key){
-    for(sftw_item *it=vpkg_sftw_script.head;it;it=it->next){
-        if(filter_key && strcmp(it->key,filter_key)!=0) continue;
-        char path[MAXB]; snprintf(path,sizeof(path),"%s/%s",it->local_path,it->name);
-        if(it->install_statu) continue;
-        write_file_all(path,it->content?it->content:"");
-        log_info("info->func:extra_config._install_script, install script...>%s<",path);
-    }
-}
-
-static int is_block_header(const char *s){
-    for(int i=0;i<6;i++) if(strcmp(s,vpkg_config_symbol[i])==0) return 1;
-    return 0;
-}
-static int parse_bool(const char *v){
-    if(!v) return 0;
-    if(strcmp(v,"True")==0 || strcmp(v,"true")==0 || strcmp(v,"T")==0 || strcmp(v,"t")==0 || strcmp(v,"1")==0) return 1;
-    return 0;
-}
-static void parse_sftw_block(char **lines,int n){
-    char *platform=NULL,*name=NULL,*version=NULL,*website=NULL;
-    char *autor=NULL,*publish=NULL,*description=NULL,*proxy_s=NULL;
-    for(int i=1;i<n;i++){
-        char *lc=str_dup(lines[i]);
-        char *t=str_trim_inplace(lc);
-        if(!*t){ free(lc); continue; }
-        char *colon=strchr(t,':');
-        if(!colon){ free(lc); continue; }
-        *colon=0;
-        char *k=str_trim_inplace(t);
-        char *v=str_trim_inplace(colon+1);
-        if     (strcmp(k,"platform")==0) platform=str_dup(v);
-        else if(strcmp(k,"name")==0)     name=str_dup(v);
-        else if(strcmp(k,"version")==0)  version=str_dup(v);
-        else if(strcmp(k,"website")==0)  website=str_dup(v);
-        else if(strcmp(k,"autor")==0)    autor=str_dup(v);
-        else if(strcmp(k,"publish")==0)  publish=str_dup(v);
-        else if(strcmp(k,"description")==0) description=str_dup(v);
-        else if(strcmp(k,"proxy")==0)    proxy_s=str_dup(v);
-        free(lc);
-    }
-    if(platform){ free(vpkg_info.platform); vpkg_info.platform=platform; }
-    if(name){ free(vpkg_info.name); vpkg_info.name=name; }
-    if(version){ free(vpkg_info.version); vpkg_info.version=version; }
-    if(website){ free(vpkg_info.website); vpkg_info.website=website; }
-    if(autor){ free(vpkg_info.autor); vpkg_info.autor=autor; }
-    if(publish){ free(vpkg_info.publish); vpkg_info.publish=publish; }
-    if(description){ free(vpkg_info.description); vpkg_info.description=description; }
-    if(proxy_s){ vpkg_info.proxy = parse_bool(proxy_s); free(proxy_s); }
-}
-static void parse_tool_block(char **lines,int n){
-    char *platform=NULL,*name=NULL,*version=NULL,*website=NULL;
-    char *local_path=NULL,*symbol_excu=NULL;
-    url_kv_map inst; url_kv_map_init(&inst);
-    url_kv_map env;  url_kv_map_init(&env);
-    int mode=0;
-    for(int i=1;i<n;i++){
-        char *lc=str_dup(lines[i]);
-        char *t=str_trim_inplace(lc);
-        if(!*t){ free(lc); continue; }
-        if(strcmp(t,"init->install")==0){ mode=1; free(lc); continue; }
-        if(strcmp(t,"over->install")==0){ mode=0; free(lc); continue; }
-        if(strcmp(t,"init->env_arg")==0){ mode=2; free(lc); continue; }
-        if(strcmp(t,"over->env_arg")==0){ mode=0; free(lc); continue; }
-        if(mode==0){
-            char *colon=strchr(t,':');
-            if(colon){
-                *colon=0;
-                char *k=str_trim_inplace(t);
-                char *v=str_trim_inplace(colon+1);
-                if     (strcmp(k,"platform")==0)    platform=str_dup(v);
-                else if(strcmp(k,"name")==0)        name=str_dup(v);
-                else if(strcmp(k,"version")==0)     version=str_dup(v);
-                else if(strcmp(k,"website")==0)     website=str_dup(v);
-                else if(strcmp(k,"local_path")==0)  local_path=str_dup(v);
-                else if(strcmp(k,"symbol_excu")==0) symbol_excu=str_dup(v);
-            }
-        }else{
-            char *eq=strchr(t,'=');
-            if(eq){
-                *eq=0;
-                char *k=str_trim_inplace(t);
-                char *v=str_trim_inplace(eq+1);
-                url_kv *kv=url_kv_get_or_create(mode==1?&inst:&env,k);
-                list_push(&kv->values,v);
-            }
-        }
-        free(lc);
-    }
-    if(name && platform && strcmp(platform,vpkg_info.platform)!=0){
-        log_info("info->\"%s\"...\"%s\"...not match system platform...\"%s\"!!!",
-                 name,platform,vpkg_info.platform);
-        free(platform);free(name);free(version);free(website);
-        free(local_path);free(symbol_excu);
-        url_kv_map_free(&inst); url_kv_map_free(&env); return;
-    }
-    if(name && platform){
-        sftw_item *it=sftw_find(&vpkg_sftw_tool,name);
-        if(!it) it=sftw_add(&vpkg_sftw_tool,name,name);
-        free(it->platform); it->platform=platform;
-        free(it->version);  it->version = version?version:str_dup("");
-        free(it->website);  it->website = website?website:str_dup("");
-        free(it->local_path); it->local_path=local_path?local_path:str_dup("");
-        free(it->symbol_excu); it->symbol_excu=symbol_excu?symbol_excu:str_dup("");
-        url_kv_map_free(&it->install); it->install=inst;
-        url_kv_map_free(&it->env_arg); it->env_arg=env;
-    }else{
-        free(platform);free(name);free(version);free(website);
-        free(local_path);free(symbol_excu);
-        url_kv_map_free(&inst); url_kv_map_free(&env);
-    }
-}
-static void parse_script_block(char **lines,int n){
-    char *platform=NULL,*name=NULL,*version=NULL,*website=NULL,*local_path=NULL;
-    int in_content=0;
-    str_list cl; list_init(&cl);
-    for(int i=1;i<n;i++){
-        char *lc=str_dup(lines[i]);
-        char *t=str_trim_inplace(lc);
-        if(!*t){ free(lc); continue; }
-        if(strcmp(t,"init->content")==0){ in_content=1; free(lc); continue; }
-        if(strcmp(t,"over->content")==0){ in_content=0; free(lc); continue; }
-        if(in_content){ list_push(&cl,lines[i]); free(lc); continue; }
-        char *colon=strchr(t,':');
-        if(colon){
-            *colon=0;
-            char *k=str_trim_inplace(t);
-            char *v=str_trim_inplace(colon+1);
-            if     (strcmp(k,"platform")==0)    platform=str_dup(v);
-            else if(strcmp(k,"name")==0)        name=str_dup(v);
-            else if(strcmp(k,"version")==0)     version=str_dup(v);
-            else if(strcmp(k,"website")==0)     website=str_dup(v);
-            else if(strcmp(k,"local_path")==0)  local_path=str_dup(v);
-        }
-        free(lc);
-    }
-    size_t tot=1; for(str_node *v=cl.head;v;v=v->next) tot+=strlen(v->data)+2;
-    char *content=(char*)calloc(1,tot);
-    for(str_node *v=cl.head;v;v=v->next){
-        const char *s=v->data;
-        while(*s==' '||*s=='\t') s++;
-        strcat(content,s); strcat(content,"\n");
-    }
-    if(name && platform && strcmp(platform,vpkg_info.platform)!=0){
-        log_info("info->\"%s\"...\"%s\"...not match system platform...\"%s\"!!!",
-                 name,platform,vpkg_info.platform);
-        free(platform);free(name);free(version);free(website);free(local_path);free(content);
-        list_free(&cl); return;
-    }
-    if(name && platform){
-        sftw_item *it=sftw_find(&vpkg_sftw_script,name);
-        if(!it) it=sftw_add(&vpkg_sftw_script,name,name);
-        free(it->platform); it->platform=platform;
-        free(it->version);  it->version = version?version:str_dup("");
-        free(it->website);  it->website = website?website:str_dup("");
-        free(it->local_path); it->local_path=local_path?local_path:str_dup("");
-        free(it->content);  it->content = content?content:str_dup("");
-    }else{
-        free(platform);free(name);free(version);free(website);free(local_path);free(content);
-    }
-    list_free(&cl);
-}
-static void _item_match(void){
-    char *raw=read_file_all(vpkg_config_file); if(!raw) return;
-    int in_comment=0;
-    for(char *p=raw;*p;p++){
-        if(*p=='#') in_comment=1;
-        else if(*p=='\n') in_comment=0;
-        else if(in_comment) *p=' ';
-    }
-    str_list lines; list_init(&lines);
-    char *p=raw;
-    while(*p){
-        char *nl=strchr(p,'\n');
-        size_t len= nl? (size_t)(nl-p): strlen(p);
-        char *one=(char*)malloc(len+1); memcpy(one,p,len); one[len]=0;
-        char *t=one; while(*t==' '||*t=='\t') t++;
-        if(*t) list_push(&lines,one);
-        free(one);
-        if(!nl) break;
-        p=nl+1;
-    }
-    free(raw);
-
-    int cnt = lines.count;
-    int *split=(int*)malloc((cnt+1)*sizeof(int));
-    int sc=0;
-    int idx = 0;
-    for(str_node *n=lines.head;n;n=n->next, idx++){
-        char *c=str_dup(n->data);
-        char *t=str_trim_inplace(c);
-        if(is_block_header(t)) split[sc++]=idx;
-        free(c);
-    }
-    split[sc++]=cnt;
-
-    char **arr = (char**)malloc(cnt*sizeof(char*));
-    idx=0; for(str_node *n=lines.head;n;n=n->next, idx++) arr[idx]=n->data;
-
-    for(int i=0;i<sc-1;i++){
-        int start=split[i], end=split[i+1];
-        char *h=str_dup(arr[start]);
-        char *ht=str_trim_inplace(h);
-        if(strcmp(ht,"info->sftw")==0||strcmp(ht,"info=>sftw")==0)
-            parse_sftw_block(&arr[start],end-start);
-        else if(strcmp(ht,"info->tool")==0||strcmp(ht,"info=>tool")==0)
-            parse_tool_block(&arr[start],end-start);
-        else if(strcmp(ht,"info->script")==0||strcmp(ht,"info=>script")==0)
-            parse_script_block(&arr[start],end-start);
-        free(h);
-    }
-    free(arr); free(split); list_free(&lines);
-}
-void extra_config(void){
-    if(!path_exists(vpkg_config_file)){
-        log_warn("warn->config file miss...>%s<",vpkg_config_file);
-        _item_extra(); _item_check(); _install_script(NULL); return;
-    }
-    _item_match(); _item_extra(); _item_check(); _install_script(NULL);
-}
-
-/* ======================= 11. extra_command ======================= */
-static int _check_basic_sftw_statu(void){
-    int ok=1;
-    for(int i=0;i<2;i++){
-        sftw_item *it=sftw_find(&vpkg_sftw_tool,vpkg_sftw_tool_basic[i]);
-        if(!it||!it->install_statu){
-            ok=0;
-            log_erro("erro->lack of basic sftw...>%s<",vpkg_sftw_tool_basic[i]);
-        }
-    }
-    return ok;
-}
-static void _get_file_and_dir(const char *aim_path,str_list *files,str_list *dirs){
-    list_init(files); list_init(dirs);
-    dir_scan ds=scan_dir(aim_path);
-    for(str_node *n=ds.files.head;n;n=n->next) list_push(files,n->data);
-    for(str_node *n=ds.dirs.head;n;n=n->next)  list_push(dirs,n->data);
-    list_free(&ds.files); list_free(&ds.dirs);
-}
-static void _get_differ_item(str_list *A,str_list *B,str_list *out){
-    list_init(out);
-    for(str_node *n=B->head;n;n=n->next)
-        if(!list_contains(A,n->data)) list_push(out,n->data);
-}
-static char *_get_stop_dir(const char *aim_path){
-    char *cur=str_dup(aim_path);
-    while(1){
-        dir_scan ds=scan_dir(cur);
-        int visible=0, subdirs=0;
-        for(str_node *n=ds.files.head;n;n=n->next){
-            const char *b=strrchr(n->data,'/'); b=b?b+1:n->data;
-            if(b[0]!='.') visible++;
-        }
-        for(str_node *n=ds.dirs.head;n;n=n->next){
-            const char *b=strrchr(n->data,'/'); b=b?b+1:n->data;
-            if(b[0]!='.'){ visible++; subdirs++; }
-        }
-        if(visible!=1||subdirs!=1){ list_free(&ds.files); list_free(&ds.dirs); return cur; }
-        char *next=NULL;
-        for(str_node *n=ds.dirs.head;n;n=n->next){
-            const char *b=strrchr(n->data,'/'); b=b?b+1:n->data;
-            if(b[0]!='.'){ next=str_dup(n->data); break; }
-        }
-        list_free(&ds.files); list_free(&ds.dirs);
-        if(!next) return cur;
-        free(cur); cur=next;
-    }
-}
-static char *expand_proxy_url(const char *file_url){
-    char *url_real = str_dup(file_url);
-    if(vpkg_info.proxy){
-        for(url_kv *kv=vpkg_download_proxy.head;kv;kv=kv->next){
-            if(strstr(url_real, kv->key)){
-                const char *repl = kv->values.head? kv->values.head->data : "";
-                char *tmp = str_replace_all(url_real, kv->key, repl);
-                free(url_real); url_real = tmp;
-            }
-        }
-    }
-    return url_real;
-}
-static int _file_download(const char *file_url,const char *out_dir){
-    sftw_item *aria=sftw_find(&vpkg_sftw_tool,"aria2");
-    if(!aria||!aria->symbol_excu||!*aria->symbol_excu){
-        log_erro("erro->aria2 not available for download");
-        return 0;
-    }
-    char *url_real = expand_proxy_url(file_url);
-    char *argv[6];
-    argv[0]=aria->symbol_excu; argv[1]=url_real;
-    argv[2]="-d"; argv[3]=(char*)out_dir;
-    argv[4]="--allow-overwrite=true"; argv[5]=NULL;
-    log_info("info->running command...\n\t%s %s -d %s --allow-overwrite=true",
-             aria->symbol_excu,url_real,out_dir);
-    int code=run_command(argv);
-    free(url_real);
-    if(code!=0){ log_erro("erro->download failed (code=%d): %s",code,file_url); return 0; }
-    return 1;
-}
-static int _file_unzip(const char *file_path,const char *out_dir){
-    sftw_item *a7z=sftw_find(&vpkg_sftw_tool,"a7z");
-    if(!a7z||!a7z->symbol_excu||!*a7z->symbol_excu){
-        log_erro("erro->a7z not available for unzip");
-        return 0;
-    }
-    char outarg[MAXB]; snprintf(outarg,sizeof(outarg),"-o%s",out_dir);
-    char *argv[6];
-    argv[0]=a7z->symbol_excu; argv[1]="x"; argv[2]=(char*)file_path;
-    argv[3]=outarg; argv[4]="-y"; argv[5]=NULL;
-    log_info("info->running command...\n\t%s x %s %s -y",a7z->symbol_excu,file_path,outarg);
-    int code=run_command(argv);
-    if(code!=0){ log_erro("erro->unzip failed (code=%d): %s",code,file_path); return 0; }
-    return 1;
-}
-static void _cmd_help(const char *valu){
-    (void)valu;
-    log_warn("info->vpkg sftw info start!!!");
-    for(int i=0;i<8;i++){
-        const char *key = vpkg_info_kwOrder[i];
-        const char *val;
-        if     (strcmp(key,"platform")==0)    val=vpkg_info.platform?vpkg_info.platform:"";
-        else if(strcmp(key,"name")==0)        val=vpkg_info.name?vpkg_info.name:"";
-        else if(strcmp(key,"version")==0)     val=vpkg_info.version?vpkg_info.version:"";
-        else if(strcmp(key,"website")==0)     val=vpkg_info.website?vpkg_info.website:"";
-        else if(strcmp(key,"autor")==0)       val=vpkg_info.autor?vpkg_info.autor:"";
-        else if(strcmp(key,"publish")==0)     val=vpkg_info.publish?vpkg_info.publish:"";
-        else if(strcmp(key,"description")==0) val=vpkg_info.description?vpkg_info.description:"";
-        else                                   val=vpkg_info.proxy?"True":"False";
-        log_info("\t%-12s->\t%s", key, val);
-    }
-    log_warn("info->vpkg usage...>vpkg \\[command] \\[argument]<");
-    for(int i=0;i<6;i++) log_info("\tsupport command: %s",vpkg_cmd[i]);
-    log_warn("info->vpkg sftw info end!!!");
-}
-static void _cmd_list(const char *valu){
-    (void)valu;
-    log_warn("info->list software install status!!!");
-    log_info("\t%-15s->%-15s->%-10s","name","install_status","website");
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next){
-        const char *st=it->install_statu?"True":"False";
-        if(it->install_statu)
-            log_info("\t%-15s->%-15s->%-10s",it->name,st,it->website?it->website:"");
-        else
-            log_erro("\t%-15s->%-15s->%-10s",it->name,st,it->website?it->website:"");
-    }
-}
-
-/* ---- shell ---- */
-typedef struct { char *k; char *v; } envpair;
-typedef struct { envpair *items; int count; int cap; } env_list;
-static void env_list_init(env_list *l){ l->items=NULL; l->count=0; l->cap=0; }
-static void env_list_push(env_list *l,const char *k,const char *v){
-    for(int i=0;i<l->count;i++) if(_stricmp(l->items[i].k,k)==0){
-        free(l->items[i].v); l->items[i].v=str_dup(v); return;
-    }
-    if(l->count>=l->cap){ l->cap=l->cap?l->cap*2:32; l->items=(envpair*)realloc(l->items,l->cap*sizeof(envpair)); }
-    l->items[l->count].k=str_dup(k); l->items[l->count].v=str_dup(v); l->count++;
-}
-static void env_list_append(env_list *l,const char *k,const char *add){
-    for(int i=0;i<l->count;i++) if(_stricmp(l->items[i].k,k)==0){
-        char buf[MAXB*2]; snprintf(buf,sizeof(buf),"%s;%s",l->items[i].v,add);
-        free(l->items[i].v); l->items[i].v=str_dup(buf); return;
-    }
-    env_list_push(l,k,add);
-}
-static void env_list_free(env_list *l){
-    for(int i=0;i<l->count;i++){ free(l->items[i].k); free(l->items[i].v); }
-    free(l->items); l->items=NULL; l->count=0; l->cap=0;
-}
-static void _cmd_shell(const char *valu){
-    (void)valu;
-    char *orig=GetEnvironmentStringsA();
-    env_list envs; env_list_init(&envs);
-    char *path_key=NULL;
-    char *p=orig;
-    while(*p){
-        char *eq=strchr(p,'=');
-        if(eq&&eq>p){
-            char *k=(char*)malloc(eq-p+1); memcpy(k,p,eq-p); k[eq-p]=0;
-            env_list_push(&envs,k,eq+1);
-            if(!path_key && _stricmp(k,"path")==0) path_key=str_dup(k);
-            free(k);
-        }
-        p+=strlen(p)+1;
-    }
-    FreeEnvironmentStringsA(orig);
-    if(!path_key) path_key=str_dup("PATH");
-
-    for(sftw_item *it=vpkg_sftw_tool.head;it;it=it->next){
-        if(!it->install_statu) continue;
-        for(url_kv *kv=it->env_arg.head;kv;kv=kv->next){
-            char buf[MAXB*4]; buf[0]=0;
-            for(str_node *v=kv->values.head;v;v=v->next){
-                if(buf[0]) strcat(buf,";");
-                strcat(buf,v->data);
-            }
-            env_list_append(&envs,kv->key,buf);
-        }
-    }
-    env_list_append(&envs,path_key,ROOT_SCRIPT);
-
-    size_t tot=1;
-    for(int i=0;i<envs.count;i++) tot+=strlen(envs.items[i].k)+1+strlen(envs.items[i].v)+1;
-    char *block=(char*)calloc(1,tot); char *d=block;
-    for(int i=0;i<envs.count;i++){
-        size_t kl=strlen(envs.items[i].k), vl=strlen(envs.items[i].v);
-        memcpy(d,envs.items[i].k,kl); d+=kl; *d++='=';
-        memcpy(d,envs.items[i].v,vl); d+=vl; *d++=0;
-    }
-    *d=0;
-    char cmdline[]="cmd /k \"title vpkg && prompt (vpkg) $P$G\"";
-    STARTUPINFOA si; PROCESS_INFORMATION pi; memset(&si,0,sizeof(si)); si.cb=sizeof(si);
-    memset(&pi,0,sizeof(pi));
-    CreateProcessA(NULL,cmdline,NULL,NULL,TRUE,0,block,NULL,&si,&pi);
-    WaitForSingleObject(pi.hProcess,INFINITE);
-    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
-    free(block); free(path_key); env_list_free(&envs);
-}
-
-/* ---- excu ---- */
-static void _cmd_excu(int argc,char **argv){
-    if(argc<3){
-        log_erro("erro->command \"excu\" argu is empty...");
-        return;
-    }
-    const char *tool_name=argv[2];
-    sftw_item *it=sftw_find(&vpkg_sftw_tool,tool_name);
-    if(!it){
-        log_erro("erro->platform...>%s<...repo not exist...>%s<",
-                 vpkg_info.platform,tool_name);
-        return;
-    }
-    int max_args = argc - 2;
-    char **cmd = (char**)malloc((max_args+2)*sizeof(char*));
-    int k=0;
-    cmd[k++]=it->symbol_excu;
-    for(int i=3;i<argc;i++) cmd[k++]=argv[i];
-    cmd[k]=NULL;
-
-    char show[MAXB*4]; show[0]=0;
-    for(int i=0;cmd[i];i++){
-        if(i) strcat(show," ");
-        int need=strchr(cmd[i],' ')||strchr(cmd[i],'\t');
-        if(need) strcat(show,"\"");
-        strcat(show,cmd[i]);
-        if(need) strcat(show,"\"");
-    }
-    log_info("info->running command...\n\t%s",show);
-
-    int code=run_command(cmd);
-    if(code!=0) log_erro("erro->running command...erro exit!!!");
-    free(cmd);
-}
-
-/* ---- install ---- */
-static int _install_sftw(const char *tool_name){
-    sftw_item *it=sftw_find(&vpkg_sftw_tool,tool_name);
-    if(!it) return 0;
-    const char *cache_dir=ROOT_CACHE;
-    char extra_dir[MAXB]; snprintf(extra_dir,sizeof(extra_dir),"%s/extra_dir",cache_dir);
-
-    if(path_exists(extra_dir) && !dir_is_empty(extra_dir)){
-        log_warn("warn->extra_dir has residual from previous install...>%s<", extra_dir);
-        log_warn("warn->attempting strict cleanup before install %s...", tool_name);
-    }
-
-    if(!reset_dir(cache_dir)){
-        log_erro("erro->abort install %s: cache_dir cannot be fully cleaned...>%s<",
-                 tool_name, cache_dir);
-        log_erro("erro->please close any process that locks files inside it");
-        return 0;
-    }
-    mkdir_recursive(extra_dir);
-    if(!dir_is_empty(extra_dir)){
-        log_erro("erro->abort install %s: extra_dir is not empty after reset", tool_name);
-        return 0;
-    }
-
-    str_list init_files, init_dirs;
-    _get_file_and_dir(cache_dir,&init_files,&init_dirs);
-
-    for(url_kv *kv=it->install.head;kv;kv=kv->next){
-        const char *install_dir=kv->key;
-        mkdir_recursive(install_dir);
-        if(!reset_dir(install_dir)){
-            log_erro("erro->abort install %s: install_dir cannot be cleaned...>%s<",
-                     tool_name, install_dir);
-            list_free(&init_files); list_free(&init_dirs);
+static int _parse_sftw_block(str_list *block) {
+    const char *expected[] = {"platform","name","version","website","autor","publish","description","proxy"};
+    if (str_list_size(block) < 9) { _syntax_panic(str_list_get(block, 0), block); return 0; }
+    kv_map *kv = kv_map_new();
+    for (int i = 0; i < 8; i++) {
+        char *prefix = xfmt("    %s:", expected[i]);
+        const char *line = str_list_get(block, (size_t)i + 1);
+        if (!line || strncmp(line, prefix, strlen(prefix)) != 0) {
+            free(prefix); kv_map_free(kv);
+            _syntax_panic(str_list_get(block, 0), block);
             return 0;
         }
-        for(str_node *v=kv->values.head;v;v=v->next){
-            if(!_file_download(v->data,cache_dir)){
-                log_erro("erro->abort install %s, download failed",tool_name);
-                list_free(&init_files); list_free(&init_dirs);
-                reset_dir(extra_dir);
-                return 0;
-            }
-        }
-        str_list over_files, over_dirs;
-        _get_file_and_dir(cache_dir,&over_files,&over_dirs);
-        str_list diff;
-        _get_differ_item(&init_files,&over_files,&diff);
-
-        str_list pack_file, move_file;
-        list_init(&pack_file); list_init(&move_file);
-        for(str_node *n=diff.head;n;n=n->next){
-            const char *path=n->data;
-            const char *b=strrchr(path,'/'); b=b?b+1:path;
-            char *name=NULL,*ext=NULL;
-            splitext(b,&name,&ext);
-            if(str_in_list(ext,vpkg_zip_default,7)) list_push(&pack_file,path);
-            int is_filter=str_in_list(ext,vpkg_zip_filter,22);
-            free(name); free(ext);
-            if(is_filter) continue;
-            list_push(&move_file,path);
-        }
-
-        for(str_node *n=pack_file.head;n;n=n->next){
-            if(!reset_dir(extra_dir)){
-                log_erro("erro->abort install %s: extra_dir cannot be cleaned before unpack...>%s<",
-                         tool_name, extra_dir);
-                log_erro("erro->some files may be locked by another process (close it and retry)");
-                list_free(&diff); list_free(&pack_file); list_free(&move_file);
-                list_free(&over_files); list_free(&over_dirs);
-                list_free(&init_files); list_free(&init_dirs);
-                return 0;
-            }
-            if(!_file_unzip(n->data,extra_dir)){
-                reset_dir(extra_dir);
-                continue;
-            }
-            char *stop=_get_stop_dir(extra_dir);
-            copy_tree(stop,install_dir);
-            free(stop);
-            if(!reset_dir(extra_dir)){
-                log_warn("warn->extra_dir has residual after unpack (will retry at end)...>%s<",
-                         extra_dir);
-            }
-        }
-        for(str_node *n=move_file.head;n;n=n->next){
-            const char *old_file=n->data;
-            const char *b=strrchr(old_file,'/'); b=b?b+1:old_file;
-            char new_file[MAXB*4]; snprintf(new_file,sizeof(new_file),"%s/%s",install_dir,b);
-            char *lp_old = to_ext_path(old_file);
-            char *lp_new = to_ext_path(new_file);
-            MoveFileExA(lp_old, lp_new, MOVEFILE_REPLACE_EXISTING);
-            free(lp_old); free(lp_new);
-        }
-        list_free(&diff); list_free(&pack_file); list_free(&move_file);
-        list_free(&over_files); list_free(&over_dirs);
+        char *trimmed = _extract_value(line, prefix);
+        _setstr(kv, expected[i], trimmed);
+        free(trimmed); free(prefix);
     }
-    list_free(&init_files); list_free(&init_dirs);
-
-    if(!reset_dir(extra_dir)){
-        log_erro("erro->install %s finished but extra_dir has residual...>%s<", tool_name, extra_dir);
-        log_erro("erro->some files may be in use; please close the related program");
+    for (str_node *kn = vpkg_info_kwOrder->head; kn; kn = kn->next) {
+        const char *key = kn->value;
+        const char *value = _getstr(kv, key);
+        if (!strcmp(key, "proxy")) {
+            int b = (!strcmp(value,"True") || !strcmp(value,"true") || !strcmp(value,"T") ||
+                     !strcmp(value,"t")    || !strcmp(value,"1"));
+            _setbool(vpkg_info, key, b);
+            continue;
+        }
+        _setstr(vpkg_info, key, value);
     }
+    kv_map_free(kv);
     return 1;
 }
-static void _unique_git(void){
-    log_info("info->install DLC(init home) for...>git<");
-    sftw_item *git=sftw_find(&vpkg_sftw_tool,"git");
-    if(!git) return;
-    const char *cache_dir=ROOT_CACHE;
-    char extra_dir[MAXB]; snprintf(extra_dir,sizeof(extra_dir),"%s/extra_dir",cache_dir);
-    const char *git_root=git->local_path;
-    dir_scan ds=scan_dir(git_root);
-    char pack[MAXB]="";
-    for(str_node *n=ds.files.head;n;n=n->next){
-        const char *b=strrchr(n->data,'/'); b=b?b+1:n->data;
-        if(str_ends_with(b,".7z.exe")){ snprintf(pack,sizeof(pack),"%s",b); break; }
+static int _parse_tool_block(str_list *block) {
+    const char *pre[] = {"platform","name","version","website","local_path","symbol_excu"};
+    if (str_list_size(block) < 9) { _syntax_panic(str_list_get(block, 0), block); return 0; }
+    kv_map *common = kv_map_new();
+    for (int i = 0; i < 6; i++) {
+        char *prefix = xfmt("    %s:", pre[i]);
+        const char *line = str_list_get(block, (size_t)i + 1);
+        if (!line || strncmp(line, prefix, strlen(prefix)) != 0) {
+            free(prefix); kv_map_free(common);
+            _syntax_panic(str_list_get(block, 0), block);
+            return 0;
+        }
+        char *trimmed = _extract_value(line, prefix);
+        _setstr(common, pre[i], trimmed);
+        free(trimmed); free(prefix);
     }
-    list_free(&ds.files); list_free(&ds.dirs);
-    if(!pack[0]) return;
-    char oldp[MAXB], newp[MAXB];
-    snprintf(oldp,sizeof(oldp),"%s/%s",git_root,pack);
-    snprintf(newp,sizeof(newp),"%s/%s",cache_dir,pack);
-    char *lp_old = to_ext_path(oldp);
-    char *lp_new = to_ext_path(newp);
-    MoveFileExA(lp_old, lp_new, MOVEFILE_REPLACE_EXISTING);
-    free(lp_old); free(lp_new);
-    if(!reset_dir(extra_dir)){
-        log_erro("erro->abort _unique_git: extra_dir cannot be cleaned...>%s<", extra_dir);
-        return;
-    }
-    if(!reset_dir(git_root)){
-        log_erro("erro->abort _unique_git: git_root cannot be cleaned...>%s<", git_root);
-        return;
-    }
-    _file_unzip(newp,extra_dir);
-    char *stop=_get_stop_dir(extra_dir);
-    copy_tree(stop,git_root); free(stop);
-    if(!reset_dir(extra_dir)){
-        log_warn("warn->_unique_git: extra_dir has residual...>%s<", extra_dir);
-    }
-}
-static void _unique_pixi(void){
-    log_info("info->install DLC(init home) for...>pixi<");
-    sftw_item *pixi=sftw_find(&vpkg_sftw_tool,"pixi"); if(!pixi) return;
-    char cmd[MAXB*2];
-    snprintf(cmd,sizeof(cmd),"\"%s\" init \"%s\"",pixi->symbol_excu,pixi->local_path);
-    run_cmd_line(cmd);
-    char content[MAXB*3];
-    snprintf(content,sizeof(content),
-        "@echo off\ncall %s shell --manifest-path %s/pixi.toml",
-        pixi->symbol_excu,pixi->local_path);
-    sftw_item *it=sftw_find(&vpkg_sftw_script,"prefix");
-    if(!it) it=sftw_add(&vpkg_sftw_script,"prefix","prefix.bat");
-    free(it->platform); it->platform=str_dup("x64-win");
-    free(it->version);  it->version =str_dup("1.0");
-    free(it->website);  it->website =str_dup("void");
-    free(it->local_path); it->local_path=str_dup(ROOT_SCRIPT);
-    free(it->content);  it->content =str_dup(content);
-    it->install_statu=0;
-    _install_script("prefix");
-}
-static void _unique_python(void){
-    log_info("info->install DLC(pip) for...>python<");
-    sftw_item *py=sftw_find(&vpkg_sftw_tool,"python");
-    if(!py||!py->install.head) return;
-    const char *path_install=py->install.head->key;
-    printf("%s\n",path_install);
-    char f_pth[MAXB]="", f_pip[MAXB]="", f_py[MAXB]="";
-    dir_scan ds=scan_dir(path_install);
-    for(str_node *n=ds.files.head;n;n=n->next){
-        if(str_ends_with(n->data,"._pth")) snprintf(f_pth,sizeof(f_pth),"%s",n->data);
-        if(str_ends_with(n->data,"get-pip.py")) snprintf(f_pip,sizeof(f_pip),"%s",n->data);
-        if(str_ends_with(n->data,"python.exe")) snprintf(f_py,sizeof(f_py),"%s",n->data);
-    }
-    list_free(&ds.files); list_free(&ds.dirs);
-    if(f_pth[0]){
-        char *c=read_file_all(f_pth);
-        if(c){
-            char *nc=str_replace_all(c,"#import site","import site");
-            write_file_all(f_pth,nc);
-            free(nc); free(c);
+    kv_map *install = kv_map_new(), *env_arg = kv_map_new();
+    const char *state = NULL;
+    for (size_t i = 7; i < str_list_size(block); i++) {
+        const char *line = str_list_get(block, i);
+        const char *s = line;
+        while (*s && isspace((unsigned char)*s)) s++;
+        size_t elen = strlen(s);
+        while (elen && isspace((unsigned char)s[elen-1])) elen--;
+        if (elen == 13 && !strncmp(s, "init->install", 13)) { state = "install"; continue; }
+        if (elen == 13 && !strncmp(s, "over->install", 13)) { state = NULL; continue; }
+        if (elen == 13 && !strncmp(s, "init->env_arg", 13)) { state = "env_arg"; continue; }
+        if (elen == 13 && !strncmp(s, "over->env_arg", 13)) { state = NULL; continue; }
+        if (elen == 0) continue;
+        if (state) {
+            const char *eq = memchr(s, '=', elen);
+            if (!eq) { kv_map_free(common); kv_map_free(install); kv_map_free(env_arg); _syntax_panic(str_list_get(block, 0), block); return 0; }
+            size_t klen = (size_t)(eq - s);
+            while (klen && isspace((unsigned char)s[klen-1])) klen--;
+            char *k = (char *)malloc(klen + 1); memcpy(k, s, klen); k[klen] = 0;
+            const char *vs = eq + 1;
+            while (*vs && isspace((unsigned char)*vs)) vs++;
+            const char *ve = vs + strlen(vs);
+            while (ve > vs && isspace((unsigned char)ve[-1])) ve--;
+            size_t vlen = (size_t)(ve - vs);
+            char *v = (char *)malloc(vlen + 1); memcpy(v, vs, vlen); v[vlen] = 0;
+            kv_map *target = (!strcmp(state, "install")) ? install : env_arg;
+            str_list *lst = _getlist(target, k);
+            if (!lst) { lst = str_list_new(); _setlist(target, k, lst); }
+            str_list_add(lst, v, NULL);
+            free(k); free(v);
         }
     }
-    if(f_pth[0]&&f_pip[0]&&f_py[0]){
-        char cmd[MAXB*2]; snprintf(cmd,sizeof(cmd),"\"%s\" \"%s\"",f_py,f_pip);
-        run_cmd_line(cmd);
+    const char *platform = _getstr(common, "platform");
+    const char *tool_name = _getstr(common, "name");
+    if (strcmp(platform, _getstr(vpkg_info, "platform")) != 0) {
+        log_info(xfmt("info->“%s”...“%s”...not match system platform...“%s”!!!",
+                      tool_name, platform, _getstr(vpkg_info, "platform")));
+        kv_map_free(common); kv_map_free(install); kv_map_free(env_arg);
+        return 0;
+    }
+    kv_map *entry = kv_map_new();
+    _setstr(entry, "platform", platform);
+    _setstr(entry, "name", tool_name);
+    _setstr(entry, "version", _getstr(common, "version"));
+    _setstr(entry, "website", _getstr(common, "website"));
+    _setstr(entry, "local_path", _getstr(common, "local_path"));
+    _setstr(entry, "symbol_excu", _getstr(common, "symbol_excu"));
+    _setdict(entry, "install", install);
+    _setdict(entry, "env_arg", env_arg);
+    _setbool(entry, "install_statu", 0);
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map_remove(tools, tool_name);
+    { value v; v.type = VAL_DICT; v.as.dict_val = entry; kv_map_add(tools, tool_name, &v); }
+    kv_map_free(common);
+    return 1;
+}
+static int _parse_script_block(str_list *block) {
+    const char *pre[] = {"platform","name","version","website","local_path"};
+    if (str_list_size(block) < 7) { _syntax_panic(str_list_get(block, 0), block); return 0; }
+    kv_map *common = kv_map_new();
+    for (int i = 0; i < 5; i++) {
+        char *prefix = xfmt("    %s:", pre[i]);
+        const char *line = str_list_get(block, (size_t)i + 1);
+        if (!line || strncmp(line, prefix, strlen(prefix)) != 0) {
+            free(prefix); kv_map_free(common);
+            _syntax_panic(str_list_get(block, 0), block);
+            return 0;
+        }
+        char *trimmed = _extract_value(line, prefix);
+        _setstr(common, pre[i], trimmed);
+        free(trimmed); free(prefix);
+    }
+    str_list *content_lines = str_list_new();
+    int in_content = 0;
+    for (size_t i = 6; i < str_list_size(block); i++) {
+        const char *line = str_list_get(block, i);
+        const char *s = line; while (*s && isspace((unsigned char)*s)) s++;
+        size_t elen = strlen(s);
+        while (elen && isspace((unsigned char)s[elen-1])) elen--;
+        if (elen == 13 && !strncmp(s, "init->content", 13)) { in_content = 1; continue; }
+        if (elen == 13 && !strncmp(s, "over->content", 13)) { in_content = 0; continue; }
+        if (in_content) {
+            size_t L = strlen(line);
+            str_list_add(content_lines, L >= 8 ? line + 8 : line, NULL);
+        }
+    }
+    const char *platform = _getstr(common, "platform");
+    const char *script_name = _getstr(common, "name");
+    if (strcmp(platform, _getstr(vpkg_info, "platform")) != 0) {
+        log_info(xfmt("info->“%s”...“%s”...not match system platform...“%s”!!!",
+                      script_name, platform, _getstr(vpkg_info, "platform")));
+        kv_map_free(common); str_list_free(content_lines);
+        return 0;
+    }
+    size_t total = 1;
+    for (str_node *n = content_lines->head; n; n = n->next) total += strlen(n->value) + 1;
+    char *content = (char *)calloc(1, total);
+    for (str_node *n = content_lines->head; n; n = n->next) {
+        if (!n->value[0]) continue;
+        strcat(content, n->value); strcat(content, "\n");
+    }
+    kv_map *entry = kv_map_new();
+    _setstr(entry, "platform", platform);
+    _setstr(entry, "name", script_name);
+    _setstr(entry, "version", _getstr(common, "version"));
+    _setstr(entry, "website", _getstr(common, "website"));
+    _setstr(entry, "local_path", _getstr(common, "local_path"));
+    _setstr(entry, "content", content);
+    _setbool(entry, "install_statu", 0);
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    kv_map_remove(scripts, script_name);
+    { value v; v.type = VAL_DICT; v.as.dict_val = entry; kv_map_add(scripts, script_name, &v); }
+    free(content); kv_map_free(common); str_list_free(content_lines);
+    return 1;
+}
+static void _item_match(const char *config_text) {
+    if (!config_text) return;
+    char *raw = xstrdup(config_text);
+    char *p = raw;
+    while (*p) {
+        char *eol = p;
+        while (*eol && *eol != '\n' && *eol != '\r') eol++;
+        for (char *q = p; q < eol; q++) if (*q == '#') { *q = 0; eol = q; break; }
+        p = eol;
+        while (*p == '\n' || *p == '\r') p++;
+    }
+    str_list *lines = str_list_new();
+    char *line = raw;
+    while (*line) {
+        char *eol = strchr(line, '\n');
+        if (eol) *eol = 0;
+        size_t L = strlen(line);
+        if (L && line[L-1] == '\r') line[L-1] = 0;
+        int blank = 1;
+        for (char *q = line; *q; q++) if (!isspace((unsigned char)*q)) { blank = 0; break; }
+        if (!blank) str_list_add(lines, line, NULL);
+        if (!eol) break;
+        line = eol + 1;
+    }
+    free(raw);
+    int *split_idx = (int *)malloc(sizeof(int) * (str_list_size(lines) + 1));
+    int cnt = 0;
+    for (size_t i = 0; i < str_list_size(lines); i++)
+        if (str_list_find(vpkg_config_symbol, str_list_get(lines, i))) split_idx[cnt++] = (int)i;
+    split_idx[cnt++] = (int)str_list_size(lines);
+    for (int b = 0; b < cnt - 1; b++) {
+        size_t s = (size_t)split_idx[b], e = (size_t)split_idx[b+1];
+        if (s >= e) continue;
+        const char *head = str_list_get(lines, s);
+        str_list *block = str_list_new();
+        for (size_t i = s; i < e; i++) str_list_add(block, str_list_get(lines, i), NULL);
+        if (!strcmp(head, "info->sftw") || !strcmp(head, "info=>sftw")) _parse_sftw_block(block);
+        else if (!strcmp(head, "info->tool") || !strcmp(head, "info=>tool")) _parse_tool_block(block);
+        else if (!strcmp(head, "info->script") || !strcmp(head, "info=>script")) _parse_script_block(block);
+        str_list_free(block);
+    }
+    free(split_idx); str_list_free(lines);
+}
+static void _item_extra(void) {
+    for (kv_node *n = vpkg_root_tree->head; n; n = n->next) {
+        char *a = str_replace_all(n->val.as.str, "{vpkg_root}", vpkg_root);
+        char *b = str_replace_all(a, "{platform}", _getstr(vpkg_info, "platform"));
+        free(a);
+        _clean_val(&n->val); n->val.type = VAL_STR; n->val.as.str = b;
+        if (!path_exists(b)) { mkdir_single(b); log_warn(xfmt("info->creat dir...>%s<", b)); }
+    }
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    for (kv_node *n = tools->head; n; n = n->next) {
+        kv_map *t = n->val.as.dict_val;
+        const char *platform = _getstr(t, "platform");
+        const char *name = _getstr(t, "name");
+        const char *version = _getstr(t, "version");
+        const char *old_lp = _getstr(t, "local_path");
+        char *new_lp = _resolve_placeholders(old_lp, platform, name, version, old_lp);
+        char *new_sym = _resolve_placeholders(_getstr(t, "symbol_excu"), platform, name, version, new_lp);
+        kv_map *inst_old = _getdict(t, "install");
+        kv_map *env_old = _getdict(t, "env_arg");
+        kv_map *inst_new = kv_map_new();
+        kv_map *env_new = kv_map_new();
+        if (inst_old) for (kv_node *m = inst_old->head; m; m = m->next) {
+            char *nk = _resolve_placeholders(m->key, platform, name, version, new_lp);
+            str_list *lst = str_list_new();
+            str_list *old = m->val.as.list_val;
+            for (str_node *v = old ? old->head : NULL; v; v = v->next) {
+                char *nv = _resolve_placeholders(v->value, platform, name, version, new_lp);
+                str_list_add(lst, nv, NULL); free(nv);
+            }
+            _setlist(inst_new, nk, lst); free(nk);
+        }
+        if (env_old) for (kv_node *m = env_old->head; m; m = m->next) {
+            char *nk = _resolve_placeholders(m->key, platform, name, version, new_lp);
+            str_list *lst = str_list_new();
+            str_list *old = m->val.as.list_val;
+            for (str_node *v = old ? old->head : NULL; v; v = v->next) {
+                char *nv = _resolve_placeholders(v->value, platform, name, version, new_lp);
+                str_list_add(lst, nv, NULL); free(nv);
+            }
+            _setlist(env_new, nk, lst); free(nk);
+        }
+        _setstr(t, "local_path", new_lp);
+        _setstr(t, "symbol_excu", new_sym);
+        _setdict(t, "install", inst_new);
+        _setdict(t, "env_arg", env_new);
+        free(new_lp); free(new_sym);
+    }
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    for (kv_node *n = scripts->head; n; n = n->next) {
+        kv_map *s = n->val.as.dict_val;
+        char *new_lp = xstrdup(_getstr(s, "local_path"));
+        const char *keys[] = {"{vpkg_root}","{vpkg_system}","{vpkg_tool}","{vpkg_script}","{vpkg_cache}",
+                              "<platform>","<name>","<version>"};
+        const char *rks[] = {"root_vpkg","root_system","root_tool","root_script","root_cache"};
+        const char *platform = _getstr(s, "platform");
+        for (int i = 0; i < 5; i++) {
+            char *nx = str_replace_all(new_lp, keys[i], _getstr(vpkg_root_tree, rks[i]));
+            free(new_lp); new_lp = nx;
+        }
+        for (int i = 5; i < 8; i++) { char *nx = str_replace_all(new_lp, keys[i], platform); free(new_lp); new_lp = nx; }
+        _setstr(s, "local_path", new_lp);
+        free(new_lp);
+    }
+    for (kv_node *n = tools->head; n; n = n->next) {
+        kv_map *t = n->val.as.dict_val;
+        _setbool(t, "install_statu", path_exists(_getstr(t, "symbol_excu")));
     }
 }
-static void _unique_rust(void){
-    log_info("info->install DLC for...>rust<");
-    sftw_item *rust=sftw_find(&vpkg_sftw_tool,"rust"); if(!rust) return;
-    url_kv *rh=url_kv_find(&rust->env_arg,"rustup_home");
-    url_kv *ch=url_kv_find(&rust->env_arg,"cargo_home");
-    if(rh&&rh->values.head) SetEnvironmentVariableA("rustup_home",rh->values.head->data);
-    if(ch&&ch->values.head) SetEnvironmentVariableA("cargo_home",ch->values.head->data);
-    char cmd[MAXB*2]; snprintf(cmd,sizeof(cmd),"\"%s\"",rust->symbol_excu);
-    run_cmd_line(cmd);
-}
-static void _unique_lua(void){
-    log_info("info->install DLC(luarocks config.lua) for...>lua<");
-    sftw_item *lua=sftw_find(&vpkg_sftw_tool,"lua"); if(!lua) return;
-    const char *lua_ver="5.5.0";
-    const char *lua_root=lua->local_path;
-    char lua_include[MAXB]; snprintf(lua_include,sizeof(lua_include),"%s/include",lua_root);
-    char lua_excu[MAXB];    snprintf(lua_excu,sizeof(lua_excu),"%s",lua->symbol_excu);
-    dir_scan ds=scan_dir(lua_root);
-    for(str_node *n=ds.files.head;n;n=n->next){
-        const char *b=strrchr(n->data,'/'); b=b?b+1:n->data;
-        if(str_starts_with(b,"luac") && str_ends_with(b,".exe"))
-            snprintf(lua_excu,sizeof(lua_excu),"%s",n->data);
+typedef struct { kv_map *scripts; } _walk_add_ud;
+static void _walk_add_script(const char *path, const char *basename, void *ud) {
+    _walk_add_ud *u = (_walk_add_ud *)ud;
+    char *fname = xstrdup(basename);
+    char *dot = strrchr(fname, '.');
+    if (dot) *dot = 0;
+    char *content = read_whole(path);
+    if (content) {
+        kv_map *s = kv_map_new();
+        _setstr(s, "platform", "x64-win");
+        _setstr(s, "name", basename);
+        _setstr(s, "version", "void");
+        _setstr(s, "website", "void");
+        _setstr(s, "local_path", _getstr(vpkg_root_tree, "root_script"));
+        _setstr(s, "content", content);
+        _setbool(s, "install_statu", 1);
+        kv_map_remove(u->scripts, fname);
+        { value v; v.type = VAL_DICT; v.as.dict_val = s; kv_map_add(u->scripts, fname, &v); }
+        free(content);
     }
-    list_free(&ds.files); list_free(&ds.dirs);
-    char lua_excu_copy[MAXB]; snprintf(lua_excu_copy,sizeof(lua_excu_copy),"%s/lua.exe",lua_root);
-    char *lp_src = to_ext_path(lua_excu);
-    char *lp_dst = to_ext_path(lua_excu_copy);
-    CopyFileA(lp_src, lp_dst, FALSE);
-    free(lp_src); free(lp_dst);
-    char config[MAXB*3];
-    snprintf(config,sizeof(config),
-        "lua_version = \"%s\"\n"
-        "rocks_trees = {\n"
-        "\t{name = \"user\",root = \"%s\",},\n"
-        "}\n"
-        "variables = {\n"
-        "\tCC = \"gcc\",\n"
-        "\tCXX = \"g++\",\n"
-        "\tLINKFLAGS = \"-shared\",\n"
-        "\tLUA_VERSION = \"%s\",\n"
-        "\tLUA = \"%s\",\n"
-        "\tLUA_BINDIR = \"%s\",\n"
-        "\tLUA_INCDIR = \"%s\",\n"
-        "\tLUA_LIBDIR = \"%s\",\n"
-        "}",
-        lua_ver,lua_root,lua_ver,lua_excu_copy,lua_root,lua_include,lua_root);
-    char path[MAXB]; snprintf(path,sizeof(path),"%s/config.lua",lua_root);
-    write_file_all(path,config);
+    free(fname);
 }
-static void _unique_handle(const char *tool_name){
-    if(strcmp(tool_name,"git")==0)    _unique_git();
-    if(strcmp(tool_name,"pixi")==0)   _unique_pixi();
-    if(strcmp(tool_name,"python")==0) _unique_python();
-    if(strcmp(tool_name,"rust")==0)   _unique_rust();
-    if(strcmp(tool_name,"lua")==0)    _unique_lua();
+static void _item_check(void) {
+    const char *platform = _getstr(vpkg_info, "platform");
+    const char *kinds[] = {"tool", "script"};
+    for (int k = 0; k < 2; k++) {
+        kv_map *m = _getdict(vpkg_sftw, kinds[k]);
+        str_list *del = str_list_new();
+        for (kv_node *n = m->head; n; n = n->next) {
+            if (strcmp(_getstr(n->val.as.dict_val, "platform"), platform) != 0) str_list_add(del, n->key, NULL);
+        }
+        for (str_node *d = del->head; d; d = d->next) kv_map_remove(m, d->value);
+        str_list_free(del);
+    }
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    for (kv_node *n = tools->head; n; n = n->next)
+        _setbool(n->val.as.dict_val, "install_statu", path_exists(_getstr(n->val.as.dict_val, "symbol_excu")));
+    for (kv_node *n = scripts->head; n; n = n->next) {
+        kv_map *s = n->val.as.dict_val;
+        char *path = path_join(_getstr(s, "local_path"), _getstr(s, "name"));
+        _setbool(s, "install_statu", path_exists(path));
+        free(path);
+    }
+    _walk_add_ud ud = { scripts };
+    walk_dir(_getstr(vpkg_root_tree, "root_script"), _walk_add_script, &ud);
+    /* 安全: 只清理"不在软件库中"的目录, 避免 install_statu 判断异常误删已装软件 */
+    str_list *exist_tool = str_list_new();
+    for (kv_node *n = tools->head; n; n = n->next) str_list_add(exist_tool, n->key, NULL);
+    str_list *entries = str_list_new();
+    scandir_paths(_getstr(vpkg_root_tree, "root_tool"), NULL, entries);
+    for (str_node *n = entries->head; n; n = n->next) {
+        char *base = path_base(n->value);
+        if (!str_list_find(exist_tool, base)) {
+            rmtree_rec(n->value);
+            log_warn(xfmt("warn->tool_dir: del the illegal dir...>%s<", base));
+        }
+        free(base);
+    }
+    str_list_free(entries); str_list_free(exist_tool);
 }
-static void _cmd_install(const char *tool_name){
+static void _install_script_all(void) {
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    for (kv_node *n = scripts->head; n; n = n->next) {
+        kv_map *s = n->val.as.dict_val;
+        char *path = path_join(_getstr(s, "local_path"), _getstr(s, "name"));
+        if (!_getbool(s, "install_statu")) {
+            write_whole(path, _getstr(s, "content"));
+            log_info(xfmt("info->func:extra_config._install_script, install script...>%s<", path));
+        }
+        free(path);
+    }
+}
+static void extra_config(void) {
+    char *user_text = NULL;
+    if (path_exists(vpkg_config_file)) user_text = read_whole(vpkg_config_file);
+    char *merged = user_text
+        ? xfmt("%s\n%s", vpkg_config_default, user_text)
+        : xstrdup(vpkg_config_default);
+    free(user_text);
+    _item_match(merged);
+    free(merged);
+    _item_extra();
+    _item_check();
+    _install_script_all();
+}
+
+/* ============================================================
+ * extra_command
+ * ============================================================ */
+static int _check_basic_sftw_statu(void) {
+    int ok = 1;
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    for (str_node *n = vpkg_sftw_tool_basic->head; n; n = n->next) {
+        kv_map *t = _getdict(tools, n->value);
+        if (!t || !_getbool(t, "install_statu")) { ok = 0; log_erro(xfmt("erro->lack of basic sftw...>%s<", n->value)); }
+    }
+    return ok;
+}
+static void _clean_dir(const char *aim_path) {
+    if (!path_exists(aim_path)) {
+        log_warn(xfmt("warn->not exists the dir...>%s<", aim_path));
+        return;
+    }
+    rmtree_rec(aim_path);
+    mkdir_single(aim_path);
+    log_warn(xfmt("warn->clean the dir...>%s<", aim_path));
+}
+static int _system_run_cmd(const char *cmd) {
+    int rc = system(cmd);
+    if (rc != 0) log_erro(xfmt("erro->_system_run_cmd...%s", cmd));
+    return rc == 0;
+}
+static int _file_download(const char *file_url, const char *out_dir) {
+    char *real = xstrdup(file_url);
+    if (_getbool(vpkg_info, "proxy")) {
+        for (kv_node *n = vpkg_download_proxy->head; n; n = n->next) {
+            if (strstr(real, n->key)) {
+                char *nx = str_replace_all(real, n->key, n->val.as.str);
+                free(real); real = nx;
+            }
+        }
+    }
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *aria2 = _getdict(tools, "aria2");
+    kv_map *wget = _getdict(tools, "wget");
+    int aria2_statu = aria2 ? _getbool(aria2, "install_statu") : 0;
+    const char *aria2_excu = aria2 ? _getstr(aria2, "symbol_excu") : "";
+    int wget_statu = wget ? _getbool(wget, "install_statu") : 0;
+    const char *wget_excu = wget ? _getstr(wget, "symbol_excu") : "";
+    char *cmd;
+    if (aria2_statu || !wget_statu) {
+        cmd = xfmt("\"%s\" \"%s\" --dir=\"%s\" --allow-overwrite=true --max-connection-per-server=16 --min-split-size=1M",
+                   aria2_excu, real, out_dir);
+    } else {
+        cmd = xfmt("\"%s\" -P \"%s\" \"%s\"", wget_excu, out_dir, real);
+    }
+    log_info(xfmt("info->running command...\n\t%s", cmd));
+    int rc = system(cmd);
+    if (rc != 0) log_erro(xfmt("erro->download failed (code=%d): %s", rc, file_url));
+    free(cmd); free(real);
+    return rc == 0;
+}
+static int _file_unzip(const char *file_path, const char *out_dir) {
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *a7z = _getdict(tools, "a7z");
+    const char *exe = a7z ? _getstr(a7z, "symbol_excu") : "";
+    char *cmd = xfmt("\"%s\" x \"%s\" -o\"%s\" -y", exe, file_path, out_dir);
+    log_info(xfmt("info->running command...\n\t%s", cmd));
+    int rc = system(cmd);
+    if (rc != 0) log_erro(xfmt("erro->unzip failed (code=%d): %s", rc, file_path));
+    free(cmd);
+    return rc == 0;
+}
+static void _cmd_help(void) {
+    log_warn("info->vpkg sftw info start!!!");
+    for (kv_node *n = vpkg_info->head; n; n = n->next) {
+        if (n->val.type == VAL_STR)  log_info(xfmt("\t%-12s->\t%s", n->key, n->val.as.str));
+        else if (n->val.type == VAL_BOOL) log_info(xfmt("\t%-12s->\t%s", n->key, n->val.as.bool_val ? "True" : "False"));
+    }
+    log_warn("info->vpkg usage...>vpkg \\[command] \\[argument]<");
+    for (str_node *n = vpkg_cmd->head; n; n = n->next)
+        log_info(xfmt("\tsupport command: %s", n->value));
+    log_warn("info->vpkg sftw info end!!!");
+}
+static void _cmd_list(void) {
+    log_warn("info->list software install status!!!");
+    log_info(xfmt("\t%-15s->%-15s->%-10s", "name", "install_status", "website"));
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    for (kv_node *n = tools->head; n; n = n->next) {
+        kv_map *t = n->val.as.dict_val;
+        const char *nm = _getstr(t, "name");
+        const char *web = _getstr(t, "website");
+        int st = _getbool(t, "install_statu");
+        if (st) log_info(xfmt("\t%-15s->%-15s->%-10s", nm, "True", web));
+        else    log_erro(xfmt("\t%-15s->%-15s->%-10s", nm, "False", web));
+    }
+}
+/* 修复: env_path 用副本, 防止 _putenv_s 后指针悬空 */
+static void _cmd_shell(void) {
+#ifdef _WIN32
+    const char *orig_path = getenv("PATH");
+    char *env_path = xstrdup(orig_path ? orig_path : "");
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    for (kv_node *n = tools->head; n; n = n->next) {
+        kv_map *t = n->val.as.dict_val;
+        if (!_getbool(t, "install_statu")) continue;
+        kv_map *em = _getdict(t, "env_arg");
+        if (!em) continue;
+        for (kv_node *m = em->head; m; m = m->next) {
+            str_list *lst = m->val.as.list_val;
+            size_t total = 1;
+            for (str_node *s = lst ? lst->head : NULL; s; s = s->next) total += strlen(s->value) + 1;
+            char *buf = (char *)calloc(1, total);
+            int first = 1;
+            for (str_node *s = lst ? lst->head : NULL; s; s = s->next) {
+                if (!first) strcat(buf, ";");
+                strcat(buf, s->value); first = 0;
+            }
+            const char *old = getenv(m->key);
+            char *combined = (old && *old) ? xfmt("%s;%s", old, buf) : xstrdup(buf);
+            _putenv_s(m->key, combined);
+            free(combined); free(buf);
+        }
+    }
+    {
+        const char *script_dir = _getstr(vpkg_root_tree, "root_script");
+        char *newpath = xfmt("%s;%s", env_path, script_dir);
+        _putenv_s("PATH", newpath);
+        free(newpath);
+    }
+    free(env_path);
+    system("title vpkg && cmd /k \"prompt (vpkg) $P$G\"");
+    exit(0);
+#endif
+}
+static void _get_file_and_dir(const char *aim_path, str_list *out_files, str_list *out_dirs) {
+    scandir_paths(aim_path, out_files, out_dirs);
+}
+static str_list *_get_differ_item(str_list *a, str_list *b) {
+    str_list *r = str_list_new();
+    for (str_node *n = b ? b->head : NULL; n; n = n->next)
+        if (!a || !str_list_find(a, n->value)) str_list_add(r, n->value, NULL);
+    return r;
+}
+static char *_get_stop_dir(const char *aim_path) {
+    char *cur = xstrdup(aim_path);
+    while (1) {
+        str_list *files = str_list_new(), *dirs = str_list_new();
+        scandir_paths(cur, files, dirs);
+        size_t nf = 0, nd = 0;
+        const char *first_dir = NULL;
+        for (str_node *n = files->head; n; n = n->next) {
+            char *b = path_base(n->value); if (b[0] != '.') nf++; free(b);
+        }
+        for (str_node *n = dirs->head; n; n = n->next) {
+            char *b = path_base(n->value);
+            if (b[0] != '.') { nd++; if (!first_dir) first_dir = n->value; }
+            free(b);
+        }
+        char *next = (nf + nd == 1 && nd == 1 && first_dir) ? xstrdup(first_dir) : NULL;
+        str_list_free(files); str_list_free(dirs);
+        if (!next) return cur;
+        free(cur); cur = next;
+    }
+}
+static void _cmd_install_install_script(const char *script_name) {
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    kv_map *s = _getdict(scripts, script_name);
+    if (!s) { log_erro(xfmt("erro->not exist script config...>%s<", script_name)); return; }
+    char *path = path_join(_getstr(s, "local_path"), _getstr(s, "name"));
+    write_whole(path, _getstr(s, "content"));
+    free(path);
+}
+/* 修复: 返回 int, 让 _cmd_install 感知失败 */
+static int _install_sftw(const char *tool_name) {
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *t = _getdict(tools, tool_name);
+    if (!t) return 0;
+    const char *cache_dir = _getstr(vpkg_root_tree, "root_cache");
+    const char *extra_dir = _getstr(vpkg_root_tree, "root_extra");
+    _clean_dir(cache_dir);
+    if (!path_exists(extra_dir)) mkdirs(extra_dir);
+    str_list *cache_init_files = str_list_new(), *dummy = str_list_new();
+    _get_file_and_dir(cache_dir, cache_init_files, dummy);
+    str_list_free(dummy);
+    kv_map *install = _getdict(t, "install");
+    for (kv_node *item = install->head; item; item = item->next) {
+        const char *install_dir = item->key;
+        str_list *urls = item->val.as.list_val;
+        mkdirs(install_dir);
+        _clean_dir(install_dir);
+        for (str_node *u = urls ? urls->head : NULL; u; u = u->next) {
+            if (!_file_download(u->value, cache_dir)) {
+                log_erro(xfmt("erro->abort install %s, download failed", tool_name));
+                str_list_free(cache_init_files);
+                return 0;
+            }
+        }
+        str_list *cache_over_files = str_list_new(), *dd = str_list_new();
+        _get_file_and_dir(cache_dir, cache_over_files, dd);
+        str_list_free(dd);
+        str_list *diff = _get_differ_item(cache_init_files, cache_over_files);
+        str_list *pack_file = str_list_new(), *move_file = str_list_new();
+        str_list *default_ext = _getlist(vpkg_zip_ext, "default");
+        for (str_node *n = diff->head; n; n = n->next) {
+            char *base = path_base(n->value);
+            int ispack = 0;
+            for (str_node *e = default_ext ? default_ext->head : NULL; e; e = e->next) {
+                size_t L = strlen(base), E = strlen(e->value);
+                if (L >= E && !strcmp(base + L - E, e->value)) { ispack = 1; break; }
+            }
+            if (ispack) str_list_add(pack_file, n->value, NULL);
+            else        str_list_add(move_file, n->value, NULL);
+            free(base);
+        }
+        for (str_node *n = pack_file->head; n; n = n->next) {
+            _clean_dir(extra_dir);
+            if (!_file_unzip(n->value, extra_dir)) {
+                log_erro(xfmt("erro->abort install %s, unzip failed", tool_name));
+                str_list_free(cache_init_files); str_list_free(cache_over_files);
+                str_list_free(diff); str_list_free(pack_file); str_list_free(move_file);
+                return 0;
+            }
+            char *stop = _get_stop_dir(extra_dir);
+            copy_tree(stop, install_dir);
+            free(stop);
+        }
+        for (str_node *n = move_file->head; n; n = n->next) {
+            char *base = path_base(n->value);
+            char *dest = path_join(install_dir, base);
+            if (path_exists(dest)) remove(dest);
+            rename(n->value, dest);
+            free(base); free(dest);
+        }
+        str_list_free(cache_over_files);
+        str_list_free(diff); str_list_free(pack_file); str_list_free(move_file);
+    }
+    str_list_free(cache_init_files);
+    return 1;
+}
+static void _unique_handle(const char *tool_name) {
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *t = _getdict(tools, tool_name);
+    if (!strcmp(tool_name, "pixi")) {
+        log_info("info->install DLC(init home) for...>pixi<");
+        char *cmd = xfmt("\"%s\" init \"%s\"", _getstr(t, "symbol_excu"), _getstr(t, "local_path"));
+        _system_run_cmd(cmd); free(cmd);
+        kv_map *s = kv_map_new();
+        _setstr(s, "platform", "x64-win"); _setstr(s, "name", "prefix.bat");
+        _setstr(s, "version", "1.0"); _setstr(s, "website", "void");
+        _setstr(s, "local_path", _getstr(vpkg_root_tree, "root_script"));
+        kv_map *pixi = _getdict(tools, "pixi");
+        char *c = xfmt("@echo off\ncall %s shell --manifest-path %s/pixi.toml",
+                       _getstr(pixi, "symbol_excu"), _getstr(pixi, "local_path"));
+        _setstr(s, "content", c); free(c);
+        _setbool(s, "install_statu", 0);
+        kv_map *scripts = _getdict(vpkg_sftw, "script");
+        kv_map_remove(scripts, "prefix");
+        { value v; v.type = VAL_DICT; v.as.dict_val = s; kv_map_add(scripts, "prefix", &v); }
+        _cmd_install_install_script("prefix");
+    }
+    if (!strcmp(tool_name, "python")) {
+        log_info("info->install DLC(pip) for...>python<");
+        kv_map *inst = _getdict(t, "install");
+        const char *path_install = inst ? inst->head->key : "";
+        char *file_pth = NULL, *file_pip = NULL, *file_py = NULL;
+        str_list *files = str_list_new(), *dd = str_list_new();
+        _get_file_and_dir(path_install, files, dd);
+        str_list_free(dd);
+        for (str_node *n = files->head; n; n = n->next) {
+            size_t L = strlen(n->value);
+            if (L >= 5 && !strcmp(n->value + L - 5, "._pth")) { free(file_pth); file_pth = xstrdup(n->value); }
+            if (L >= 10 && !strcmp(n->value + L - 10, "get-pip.py")) { free(file_pip); file_pip = xstrdup(n->value); }
+            if (L >= 10 && !strcmp(n->value + L - 10, "python.exe")) { free(file_py); file_py = xstrdup(n->value); }
+        }
+        str_list_free(files);
+        if (file_pth) {
+            char *content = read_whole(file_pth);
+            if (content) {
+                char *replaced = str_replace_all(content, "#import site", "import site");
+                write_whole(file_pth, replaced);
+                free(replaced); free(content);
+            }
+        }
+        if (file_pth && file_pip && file_py) {
+            char *cmd = xfmt("\"%s\" \"%s\"", file_py, file_pip);
+            _system_run_cmd(cmd); free(cmd);
+        }
+        free(file_pth); free(file_pip); free(file_py);
+    }
+    if (!strcmp(tool_name, "rust")) {
+        log_info("info->install DLC for...>rust<");
+        kv_map *em = _getdict(t, "env_arg");
+        str_list *rh = _getlist(em, "rustup_home"), *ch = _getlist(em, "cargo_home");
+        if (rh && rh->head) _putenv_s("rustup_home", rh->head->value);
+        if (ch && ch->head) _putenv_s("cargo_home", ch->head->value);
+        char *cmd = xfmt("\"%s\"", _getstr(t, "symbol_excu"));
+        _system_run_cmd(cmd); free(cmd);
+    }
+    if (!strcmp(tool_name, "lua")) {
+        log_info("info->install DLC(luarocks config.lua) for...>lua<");
+        kv_map *lua = _getdict(tools, "lua");
+        const char *lua_root = _getstr(lua, "local_path");
+        char *lua_include = xfmt("%s/include", lua_root);
+        char *lua_excu = xstrdup(_getstr(lua, "symbol_excu"));
+        {
+            str_list *files = str_list_new(), *dd = str_list_new();
+            scandir_paths(lua_root, files, dd);
+            str_list_free(dd);
+            for (str_node *n = files->head; n; n = n->next) {
+                char *b = path_base(n->value);
+                if (!strncmp(b, "luac", 4) && strlen(b) > 4 && !strcmp(b + strlen(b) - 4, ".exe")) {
+                    free(lua_excu); lua_excu = xstrdup(n->value);
+                }
+                free(b);
+            }
+            str_list_free(files);
+        }
+        char *lua_copy = xfmt("%s/lua.exe", lua_root);
+        copy_file(lua_excu, lua_copy);
+        char *content = xfmt(
+            "lua_version = \"5.5.0\"\n"
+            "rocks_trees = {\n"
+            "\t{name = \"user\",root = \"%s\",},\n"
+            "}\n"
+            "variables = {\n"
+            "\tCC = \"gcc\",\n"
+            "\tCXX = \"g++\",\n"
+            "\tLINKFLAGS = \"-shared\",\n"
+            "\tLUA_VERSION = \"5.5.0\",\n"
+            "\tLUA = \"%s\",\n"
+            "\tLUA_BINDIR = \"%s\",\n"
+            "\tLUA_INCDIR = \"%s\",\n"
+            "\tLUA_LIBDIR = \"%s\",\n"
+            "}", lua_root, lua_copy, lua_root, lua_include, lua_root);
+        kv_map *s = kv_map_new();
+        _setstr(s, "platform", "x64-win");
+        _setstr(s, "name", "config.lua");
+        _setstr(s, "version", "v1.0");
+        _setstr(s, "website", "void");
+        _setstr(s, "local_path", lua_root);
+        _setstr(s, "content", content);
+        _setbool(s, "install_statu", 0);
+        kv_map *scripts = _getdict(vpkg_sftw, "script");
+        kv_map_remove(scripts, "luarocks_config");
+        { value v; v.type = VAL_DICT; v.as.dict_val = s; kv_map_add(scripts, "luarocks_config", &v); }
+        _cmd_install_install_script("luarocks_config");
+        free(content); free(lua_copy); free(lua_include); free(lua_excu);
+    }
+}
+/* 修复: 检查 _install_sftw 返回值, 失败不跑 _unique_handle */
+static void _cmd_install(const char *tool_name) {
     log_info("info->cheak the repo for aim sftw...");
-    if(!tool_name||!*tool_name){ log_erro("erro->command \"install\" argu is empty..."); return; }
-    sftw_item *it=sftw_find(&vpkg_sftw_tool,tool_name);
-    if(!it){
-        log_erro("erro->platform...>%s<...the repo not contain...>%s<",
-                 vpkg_info.platform,tool_name);
+    if (!tool_name || !*tool_name || !strcmp(tool_name, vpkg_placeHolder)) {
+        log_erro("erro->command “install” argu is empty...");
+        return;
+    }
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    if (!_getdict(tools, tool_name)) {
+        log_erro(xfmt("erro->platform...>%s<...the repo not contain...>%s<", _getstr(vpkg_info, "platform"), tool_name));
         return;
     }
     log_info("info->check the basic sftw...");
-    (void)_check_basic_sftw_statu();
-    if(it->install_statu){
-        log_info("info->the sftw >%s< already install!!!",tool_name);
+    if (!_check_basic_sftw_statu()) {
+        log_erro("erro->lack of basic sftw...");
         return;
     }
-    _install_sftw(tool_name);
+    kv_map *t = _getdict(tools, tool_name);
+    if (_getbool(t, "install_statu")) {
+        log_info(xfmt("info->the sftw >%s< already install!!!", tool_name));
+        return;
+    }
+    if (!_install_sftw(tool_name)) {
+        log_erro(xfmt("erro->install faild...>%s<", tool_name));
+        return;
+    }
     _unique_handle(tool_name);
-    if(!is_file(it->symbol_excu)){
-        log_erro("erro->install faild...>%s<",tool_name);
+    if (!path_exists(_getstr(t, "symbol_excu"))) {
+        log_erro(xfmt("erro->install faild...>%s<", tool_name));
         return;
     }
-    log_info("info->install success...>%s<",tool_name);
+    log_info(xfmt("info->install success...>%s<", tool_name));
 }
-static void _cmd_remove(const char *tool_name){
-    if(!tool_name||!*tool_name){
-        log_erro("erro->command \"remove\" argu is empty..."); return;
-    }
-    if(str_in_list(tool_name,vpkg_sftw_tool_basic,2)){
-        log_erro("erro->can not remove the basic sftw...>%s<",tool_name); return;
-    }
-    sftw_item *it=sftw_find(&vpkg_sftw_tool,tool_name);
-    if(!it){ log_erro("erro->repo not exist...>%s<",tool_name); return; }
-
-    char path[MAXB]; snprintf(path,sizeof(path),"%s",it->local_path);
-    int existed = path_exists(path);
-
-    if(!it->install_statu && !existed){
-        log_erro("erro->not install the sftw...>%s<",tool_name);
+static void _cmd_remove(const char *tool_name) {
+    if (str_list_find(vpkg_sftw_tool_basic, tool_name)) {
+        log_erro(xfmt("erro->can not remove the basic sftw...>%s<", tool_name));
         return;
     }
-
-    int rm_failed = 0;
-
-    /* (1) 先清空目录内容，保留顶层 path */
-    if(existed){
-        if(!clear_dir_content(path)) rm_failed = 1;
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *t = _getdict(tools, tool_name);
+    if (!t) { log_erro(xfmt("erro->repo not exist...>%s<", tool_name)); return; }
+    if (!_getbool(t, "install_statu")) { log_erro(xfmt("erro->not install the sftw...>%s<", tool_name)); return; }
+    const char *install_path = _getstr(t, "local_path");
+    char *father = path_dir(install_path);
+    rmtree_rec(install_path);
+    if (path_exists(father)) {
+        str_list *files = str_list_new(), *dirs = str_list_new();
+        scandir_paths(father, files, dirs);
+        if (str_list_size(files) == 0 && str_list_size(dirs) == 0) rmtree_rec(father);
+        str_list_free(files); str_list_free(dirs);
     }
-
-    /* (2) 清空成功后再删顶层目录 */
-    if(!rm_failed && path_exists(path)){
-        char *lp = to_ext_path(path);
-        DWORD attr = GetFileAttributesA(lp);
-        if(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
-            SetFileAttributesA(lp, attr & ~FILE_ATTRIBUTE_READONLY);
-        if(!RemoveDirectoryA(lp)){
-            DWORD e = GetLastError();
-            log_erro("erro->remove top dir failed(%lu): %s", (unsigned long)e, path);
-            rm_failed = 1;
-        }
-        free(lp);
+    free(father);
+    log_warn(xfmt("warn->success remove sftw...>%s<", tool_name));
+}
+static int _cmd_excu(int argc, char **argv) {
+    if (argc < 1) { log_erro("erro->command “excu” argument is empty..."); return 0; }
+    const char *tool_name = argv[0];
+    kv_map *tools = _getdict(vpkg_sftw, "tool");
+    kv_map *scripts = _getdict(vpkg_sftw, "script");
+    kv_map *entry = _getdict(tools, tool_name);
+    if (entry) {
+        char *cmd = xfmt("\"%s\"", _getstr(entry, "symbol_excu"));
+        for (int i = 1; i < argc; i++) { char *nx = xfmt("%s \"%s\"", cmd, argv[i]); free(cmd); cmd = nx; }
+        log_info(xfmt("info->running command...\n\t%s", cmd));
+        int rc = system(cmd); free(cmd);
+        if (rc != 0) log_erro("erro->running command...erro exit!!!");
+        return rc == 0;
     }
-
-    /* (3) 逐级向上清理空目录，边界为 tool 根 */
-    if(!rm_failed){
-        char *cur = str_dup(path);
-        for(;;){
-            char *last = strrchr(cur,'/');
-            if(!last) break;
-            *last = 0;
-            if(strlen(cur) <= strlen(ROOT_TOOL)) break;
-            if(!path_exists(cur)) break;
-            dir_scan ds = scan_dir(cur);
-            int empty = (ds.files.count==0 && ds.dirs.count==0);
-            list_free(&ds.files); list_free(&ds.dirs);
-            if(!empty) break;
-            char *ulp = to_ext_path(cur);
-            if(!RemoveDirectoryA(ulp)){ free(ulp); rm_failed = 1; break; }
-            free(ulp);
-        }
-        free(cur);
+    kv_map *script = _getdict(scripts, tool_name);
+    if (script) {
+        char *sp = path_join(_getstr(script, "local_path"), _getstr(script, "name"));
+        char *cmd = xfmt("cmd /c \"%s\"", sp);
+        for (int i = 1; i < argc; i++) { char *nx = xfmt("%s \"%s\"", cmd, argv[i]); free(cmd); cmd = nx; }
+        log_info(xfmt("info->running command...\n\t%s", cmd));
+        int rc = system(cmd); free(cmd); free(sp);
+        if (rc != 0) log_erro("erro->running command...erro exit!!!");
+        return rc == 0;
     }
-
-    if(rm_failed){
-        log_erro("erro->remove sftw failed...>%s<  (see above logs for locked path)",tool_name);
-        return;
+    log_erro(xfmt("erro->platform...>%s<...repo not exist...>%s<", _getstr(vpkg_info, "platform"), tool_name));
+    return 0;
+}
+static void extra_command(int argc, char **argv) {
+    const char *cmd_type = vpkg_placeHolder;
+    int cmd_valu_start = 2;
+    if (argc >= 2) cmd_type = argv[1];
+    {
+        size_t total = 1;
+        for (int i = 2; i < argc; i++) total += strlen(argv[i]) + 3;
+        char *buf = (char *)calloc(1, total);
+        strcat(buf, "[");
+        for (int i = 2; i < argc; i++) { if (i > 2) strcat(buf, ", "); strcat(buf, "'"); strcat(buf, argv[i]); strcat(buf, "'"); }
+        strcat(buf, "]");
+        log_warn(xfmt("warn->func extra_command: %s...%s", cmd_type, buf));
+        free(buf);
     }
-    it->install_statu = 0;
-    log_warn("warn->success remove sftw...>%s<",tool_name);
+    if (!str_list_find(vpkg_cmd, cmd_type)) { log_erro(xfmt("erro->vpkg not support command...>%s<", cmd_type)); return; }
+    if (!strcmp(cmd_type, "help")) _cmd_help();
+    else if (!strcmp(cmd_type, "list")) _cmd_list();
+    else if (!strcmp(cmd_type, "install")) _cmd_install(argc > cmd_valu_start ? argv[cmd_valu_start] : vpkg_placeHolder);
+    else if (!strcmp(cmd_type, "remove"))  _cmd_remove(argc > cmd_valu_start ? argv[cmd_valu_start] : vpkg_placeHolder);
+    else if (!strcmp(cmd_type, "shell"))   _cmd_shell();
+    else if (!strcmp(cmd_type, "excu"))    _cmd_excu(argc - cmd_valu_start, argv + cmd_valu_start);
 }
 
-void extra_command(int argc,char **argv){
-    const char *cmd_type=vpkg_placeHolder;
-    const char *cmd_valu=NULL;
-    if(argc>=2) cmd_type=argv[1];
-    if(argc>=3) cmd_valu=argv[2];
-    log_warn("warn->func extra_command: %s...%s",cmd_type,cmd_valu?cmd_valu:"");
-    if(!str_in_list(cmd_type,vpkg_cmd,6)){
-        log_erro("erro->vpkg not support command...>%s<",cmd_type); return;
-    }
-    if(strcmp(cmd_type,"help")==0)         _cmd_help(cmd_valu);
-    else if(strcmp(cmd_type,"list")==0)    _cmd_list(cmd_valu);
-    else if(strcmp(cmd_type,"install")==0) _cmd_install(cmd_valu);
-    else if(strcmp(cmd_type,"remove")==0)  _cmd_remove(cmd_valu);
-    else if(strcmp(cmd_type,"shell")==0)   _cmd_shell(cmd_valu);
-    else if(strcmp(cmd_type,"excu")==0)    _cmd_excu(argc,argv);
-}
-
-/* ======================= 12. main ======================= */
-int main(int argc,char **argv){
-    enable_ansi();
+int main(int argc, char **argv) {
     init_program();
-    log_info("info->vpkg local_path...>%s<",vpkg_root);
-    log_info("info->vpkg config_file path...>%s<",vpkg_config_file);
-    log_info("info->vpkg config_file exist...>%s<",path_exists(vpkg_config_file)?"True":"False");
+    log_info(xfmt("info->vpkg local_path...>%s<", vpkg_root));
+    log_info(xfmt("info->vpkg config_file path...>%s<", vpkg_config_file));
+    log_info(xfmt("info->vpkg config_file exist...>%s<", path_exists(vpkg_config_file) ? "True" : "False"));
     extra_config();
-    extra_command(argc,argv);
+    {
+        size_t w = 0;
+        for (kv_node *n = vpkg_info->head; n; n = n->next) if (strlen(n->key) > w) w = strlen(n->key);
+        log_info("info->vpkg_info:");
+        for (kv_node *n = vpkg_info->head; n; n = n->next) {
+            if (n->val.type == VAL_STR)  log_info(xfmt("    %-*s -> %s", (int)w, n->key, n->val.as.str));
+            else if (n->val.type == VAL_BOOL) log_info(xfmt("    %-*s -> %s", (int)w, n->key, n->val.as.bool_val ? "True" : "False"));
+        }
+    }
+    extra_command(argc, argv);
     return 0;
 }

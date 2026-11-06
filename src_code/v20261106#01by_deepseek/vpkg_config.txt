@@ -1,0 +1,9 @@
+info->sftw
+    platform: x64-win
+    name: vpkg
+    version: v20261104
+    website: https://github.com/vgtxc/vpkg.git
+    autor: vgtxc
+    publish: xxx
+    description: xxx
+    proxy: False
