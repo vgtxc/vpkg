@@ -80,9 +80,9 @@ def init_program() -> str:  # 程序初始化
     vpkg_root = vpkg_root.replace("\\", "/")
     vpkg_config_file = vpkg_root + "/vpkg_config.txt"
     vpkg_config_symbol = (
-        "info->sftw", "info=>sftw",
-        "info->tool", "info=>tool",
-        "info->script", "info=>script",
+        "info->sftw",
+        "info->tool",
+        "info->script",
     )
     vpkg_info = {
         "platform": str(), "name": str(), "version": str(), "website": str(),
